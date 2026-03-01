@@ -75,6 +75,12 @@ Server:
 - `ServerPeer::popAcceptedStream()`
 - listener-driven `handleReadable()`, `handleExpiry()`, `flush()`
 
+Deprecated compatibility helpers on `Quic\ServerConnection`:
+
+- `isHandshakeComplete()`
+- `popAcceptedStream()`
+- `getPeerAddress()`
+
 Streams:
 
 - `Quic\Stream`

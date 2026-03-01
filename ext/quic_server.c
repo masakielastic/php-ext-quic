@@ -2357,11 +2357,11 @@ static const zend_function_entry quic_server_connection_methods[] = {
   PHP_ME(Quic_ServerConnection, handleExpiry, arginfo_quic_server_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, flush, arginfo_quic_server_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, getTimeout, arginfo_quic_server_get_timeout, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ServerConnection, isHandshakeComplete, arginfo_quic_server_is_handshake_complete, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_ServerConnection, isHandshakeComplete, arginfo_quic_server_is_handshake_complete, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ServerConnection, popAcceptedPeer, arginfo_quic_server_pop_accepted_peer, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ServerConnection, popAcceptedStream, arginfo_quic_server_pop_accepted_stream, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_ServerConnection, popAcceptedStream, arginfo_quic_server_pop_accepted_stream, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ServerConnection, close, arginfo_quic_server_close, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ServerConnection, getPeerAddress, arginfo_quic_server_get_address, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_ServerConnection, getPeerAddress, arginfo_quic_server_get_address, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ServerConnection, getLocalAddress, arginfo_quic_server_get_address, ZEND_ACC_PUBLIC)
   PHP_FE_END
 };

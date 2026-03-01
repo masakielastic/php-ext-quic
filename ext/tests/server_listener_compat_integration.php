@@ -3,6 +3,17 @@
 // This script intentionally exercises the listener-level compatibility path.
 // New code should prefer popAcceptedPeer() + ServerPeer::popAcceptedStream().
 
+set_error_handler(static function (int $severity, string $message): bool {
+    if (
+        $severity === E_DEPRECATED &&
+        str_contains($message, 'Quic\\ServerConnection::')
+    ) {
+        return true;
+    }
+
+    return false;
+});
+
 $server = new Quic\ServerConnection('127.0.0.1', 0, [
     'certfile' => '/tmp/nghttp3-localhost.crt',
     'keyfile' => '/tmp/nghttp3-localhost.key',
@@ -109,3 +120,4 @@ fclose($serverStream);
 fclose($clientStream);
 $server->close();
 $client->close();
+restore_error_handler();

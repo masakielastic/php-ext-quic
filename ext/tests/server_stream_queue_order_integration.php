@@ -95,7 +95,7 @@ while (microtime(true) < $deadline) {
     }
 }
 
-var_dump($server->isHandshakeComplete());
+var_dump($peer?->isHandshakeComplete() ?? false);
 var_dump($client->isHandshakeComplete());
 var_dump($listenerIds);
 var_dump($peerIds);

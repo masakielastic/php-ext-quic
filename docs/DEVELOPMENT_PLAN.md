@@ -155,9 +155,8 @@ Notes:
   accepted live peer.
 - `popAcceptedStream()` on `ServerConnection` is also a compatibility helper.
   New code should prefer `ServerPeer::popAcceptedStream()`.
-- These compatibility helpers stay in scope for milestone 1 so existing
-  single-peer examples remain small, but they are candidates for reduction once
-  peer-oriented APIs fully cover server workflows.
+- These compatibility helpers stay available for milestone 1 compatibility, but
+  they are deprecated and new code should not rely on them.
 - `ServerConnection::popAcceptedStream()` and `ServerPeer::popAcceptedStream()`
   should not be mixed in the same server flow. They expose the same accepted
   stream states through different queues for compatibility purposes.

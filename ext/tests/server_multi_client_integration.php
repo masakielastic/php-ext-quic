@@ -140,8 +140,6 @@ $exchange2 = driveExchange($server, $serverStream, $client2, $client2Stream, "pi
 
 $peerAddress = $exchange2['peer_address'];
 $client2Local = $client2->getLocalAddress();
-$serverPeerAddress = $server->getPeerAddress();
-
 var_dump($exchange1['client_handshake']);
 var_dump($exchange1['peer_handshake']);
 var_dump($exchange1['accepted']);
@@ -152,8 +150,7 @@ var_dump($exchange2['peer_handshake']);
 var_dump($exchange2['accepted']);
 var_dump($exchange2['request']);
 var_dump($exchange2['response']);
-var_dump($server->isHandshakeComplete());
-var_dump($serverPeerAddress['port'] === $client2Local['port']);
+var_dump($peerAddress['port'] === $client2Local['port']);
 var_dump($peerAddress['port'] === $client2Local['port']);
 
 fclose($client2Stream);
