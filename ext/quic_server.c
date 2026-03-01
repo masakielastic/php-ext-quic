@@ -674,6 +674,31 @@ static int quic_server_stream_close_cb(
   return 0;
 }
 
+static int quic_server_stream_reset_cb(
+  ngtcp2_conn *conn,
+  int64_t stream_id,
+  uint64_t final_size,
+  uint64_t app_error_code,
+  void *user_data,
+  void *stream_user_data
+)
+{
+  quic_server_peer_state *peer = user_data;
+  quic_stream_state *state = stream_user_data;
+
+  (void) conn;
+
+  if (state == NULL) {
+    state = quic_server_find_stream_state(peer, stream_id);
+  }
+
+  if (state != NULL) {
+    quic_stream_state_mark_peer_reset(state, final_size, app_error_code);
+  }
+
+  return 0;
+}
+
 static int quic_server_recv_stream_data_cb(
   ngtcp2_conn *conn,
   uint32_t flags,
@@ -1243,6 +1268,7 @@ static bool quic_server_quic_init(
     .acked_stream_data_offset = quic_server_acked_stream_data_offset_cb,
     .stream_open = quic_server_stream_open_cb,
     .stream_close = quic_server_stream_close_cb,
+    .stream_reset = quic_server_stream_reset_cb,
     .rand = quic_server_rand_cb,
     .get_new_connection_id = quic_server_get_new_connection_id_cb,
     .update_key = ngtcp2_crypto_update_key_cb,

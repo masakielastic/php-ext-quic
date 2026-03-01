@@ -23,6 +23,9 @@ var_dump(method_exists(Quic\ServerConnection::class, 'popAcceptedStream'));
 var_dump(method_exists(Quic\ServerConnection::class, 'getPeerAddress'));
 var_dump(method_exists(Quic\Stream::class, 'reset'));
 var_dump(method_exists(Quic\Stream::class, 'stop'));
+var_dump(method_exists(Quic\Stream::class, 'isPeerReset'));
+var_dump(method_exists(Quic\Stream::class, 'getPeerResetErrorCode'));
+var_dump(method_exists(Quic\Stream::class, 'getPeerResetFinalSize'));
 ?>
 --EXPECT--
 bool(true)
@@ -38,5 +41,8 @@ bool(false)
 bool(false)
 bool(false)
 bool(false)
+bool(true)
+bool(true)
+bool(true)
 bool(true)
 bool(true)

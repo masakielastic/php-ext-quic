@@ -83,9 +83,16 @@ Streams:
 - `isReadable()`
 - `isWritable()`
 - `isFinished()`
+- `isPeerReset()`
+- `getPeerResetErrorCode()`
+- `getPeerResetFinalSize()`
 - `reset()`
 - `stop()`
 - `close()`
+
+`Quic\Stream` currently exposes peer-originated `RESET_STREAM` details. Remote
+`STOP_SENDING` is not surfaced as a separate reason API in this minimal
+binding.
 
 ## Core rule
 

@@ -188,6 +188,9 @@ Initial methods:
 - `isReadable(): bool`
 - `isWritable(): bool`
 - `isFinished(): bool`
+- `isPeerReset(): bool`
+- `getPeerResetErrorCode(): ?int`
+- `getPeerResetFinalSize(): ?int`
 - `reset(int $errorCode = 0): void`
 - `stop(int $errorCode = 0): void`
 - `close(): void`
@@ -197,6 +200,7 @@ Milestone 1 stream behavior:
 - buffer outgoing data in C until `flush()` writes packets
 - buffer inbound stream frames in C until `read()` drains them
 - support only bidirectional application streams
+- expose peer `RESET_STREAM` reason/final-size observation
 - no per-stream flow-control API exposed to PHP initially
 
 ## Userland integration model

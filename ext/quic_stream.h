@@ -27,7 +27,10 @@ typedef struct _quic_stream_state {
   bool fin_requested;
   bool fin_sent;
   bool peer_fin_received;
+  bool peer_reset_received;
   bool closed;
+  uint64_t peer_reset_error_code;
+  uint64_t peer_reset_final_size;
   uint32_t refcount;
 } quic_stream_state;
 
@@ -60,6 +63,11 @@ void quic_stream_state_mark_write_progress(
 void quic_stream_state_mark_read_stopped(quic_stream_state *state);
 void quic_stream_state_mark_write_reset(quic_stream_state *state);
 void quic_stream_state_mark_peer_fin(quic_stream_state *state);
+void quic_stream_state_mark_peer_reset(
+  quic_stream_state *state,
+  uint64_t final_size,
+  uint64_t app_error_code
+);
 void quic_stream_state_mark_closed(quic_stream_state *state);
 void quic_stream_state_detach(quic_stream_state *state);
 void quic_stream_object_init(zval *zv, quic_stream_state *state);

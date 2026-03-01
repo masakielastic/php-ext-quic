@@ -179,6 +179,18 @@ void quic_stream_state_mark_peer_fin(quic_stream_state *state)
   state->peer_fin_received = true;
 }
 
+void quic_stream_state_mark_peer_reset(
+  quic_stream_state *state,
+  uint64_t final_size,
+  uint64_t app_error_code
+)
+{
+  state->peer_reset_received = true;
+  state->peer_reset_final_size = final_size;
+  state->peer_reset_error_code = app_error_code;
+  state->peer_fin_received = true;
+}
+
 void quic_stream_state_mark_closed(quic_stream_state *state)
 {
   state->closed = true;
@@ -242,6 +254,9 @@ ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_quic_stream_error_code, 0, 0, 0)
   ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, errorCode, IS_LONG, 0, "0")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_quic_stream_nullable_long, 0, 0, IS_LONG, 1)
 ZEND_END_ARG_INFO()
 
 static bool quic_stream_request_shutdown(
@@ -369,6 +384,35 @@ PHP_METHOD(Quic_Stream, isFinished)
   RETURN_BOOL(intern->state->closed || intern->state->peer_fin_received);
 }
 
+PHP_METHOD(Quic_Stream, isPeerReset)
+{
+  quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
+
+  RETURN_BOOL(intern->state->peer_reset_received);
+}
+
+PHP_METHOD(Quic_Stream, getPeerResetErrorCode)
+{
+  quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
+
+  if (!intern->state->peer_reset_received) {
+    RETURN_NULL();
+  }
+
+  RETURN_LONG((zend_long) intern->state->peer_reset_error_code);
+}
+
+PHP_METHOD(Quic_Stream, getPeerResetFinalSize)
+{
+  quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
+
+  if (!intern->state->peer_reset_received) {
+    RETURN_NULL();
+  }
+
+  RETURN_LONG((zend_long) intern->state->peer_reset_final_size);
+}
+
 PHP_METHOD(Quic_Stream, reset)
 {
   quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
@@ -451,6 +495,9 @@ static const zend_function_entry quic_stream_methods[] = {
   PHP_ME(Quic_Stream, isReadable, arginfo_quic_stream_bool, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, isWritable, arginfo_quic_stream_bool, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, isFinished, arginfo_quic_stream_bool, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_Stream, isPeerReset, arginfo_quic_stream_bool, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_Stream, getPeerResetErrorCode, arginfo_quic_stream_nullable_long, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_Stream, getPeerResetFinalSize, arginfo_quic_stream_nullable_long, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, reset, arginfo_quic_stream_error_code, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, stop, arginfo_quic_stream_error_code, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, close, arginfo_quic_stream_void, ZEND_ACC_PUBLIC)
