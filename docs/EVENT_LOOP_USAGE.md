@@ -115,8 +115,8 @@ while (true) {
         $peer = $server->popAcceptedPeer();
     }
 
-    if ($accepted === null) {
-        $accepted = $server->popAcceptedStream();
+    if ($accepted === null && $peer instanceof Quic\ServerPeer) {
+        $accepted = $peer->popAcceptedStream();
     }
 
     if ($accepted instanceof Quic\Stream) {

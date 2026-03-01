@@ -31,7 +31,7 @@ function driveExchange(
         }
 
         if (!$accepted) {
-            $candidate = $server->popAcceptedStream();
+            $candidate = $acceptedPeer?->popAcceptedStream();
             if ($candidate instanceof Quic\Stream) {
                 $serverSideStream = $candidate;
                 $accepted = true;

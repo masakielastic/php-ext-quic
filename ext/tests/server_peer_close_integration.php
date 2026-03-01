@@ -123,7 +123,7 @@ function exchangeRequest(
         pumpOnce($server, $serverStream, $client, $clientStream);
 
         if (!$accepted) {
-            $candidate = $server->popAcceptedStream();
+            $candidate = $peer->popAcceptedStream();
             if ($candidate instanceof Quic\Stream) {
                 $serverSideStream = $candidate;
                 $accepted = true;

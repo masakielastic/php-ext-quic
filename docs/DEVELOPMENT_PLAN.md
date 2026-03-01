@@ -164,6 +164,7 @@ Initial methods:
 
 - `getTimeout(): ?int`
 - `isHandshakeComplete(): bool`
+- `popAcceptedStream(): ?Quic\Stream`
 - `close(?int $errorCode = null, string $reason = ""): void`
 - `getPeerAddress(): array`
 - `getLocalAddress(): array`

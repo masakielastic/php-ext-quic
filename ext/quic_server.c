@@ -58,6 +58,7 @@ typedef struct _quic_server_peer_state {
   ngtcp2_conn *conn;
   ngtcp2_ccerr last_error;
   HashTable streams;
+  zend_llist accepted_streams;
   bool started;
   bool handshake_complete;
   bool closing_requested;
@@ -290,6 +291,29 @@ static void quic_server_release_accepted_stream_entry(void *data)
   quic_stream_state_release(state);
 }
 
+static quic_stream_state *quic_server_pop_accepted_stream_from_queue(zend_llist *queue)
+{
+  for (;;) {
+    quic_stream_state **state_ptr;
+    quic_stream_state *state;
+
+    state_ptr = zend_llist_get_last(queue);
+    if (state_ptr == NULL) {
+      return NULL;
+    }
+
+    state = *state_ptr;
+    quic_stream_state_addref(state);
+    zend_llist_remove_tail(queue);
+
+    if (state->owner != NULL) {
+      return state;
+    }
+
+    quic_stream_state_release(state);
+  }
+}
+
 static quic_server_peer_state *quic_server_peer_state_create(quic_server_connection_object *server)
 {
   quic_server_peer_state *peer;
@@ -307,6 +331,12 @@ static quic_server_peer_state *quic_server_peer_state_create(quic_server_connect
   peer->refcount = 1;
   ngtcp2_ccerr_default(&peer->last_error);
   zend_hash_init(&peer->streams, 8, NULL, NULL, 0);
+  zend_llist_init(
+    &peer->accepted_streams,
+    sizeof(quic_stream_state *),
+    quic_server_release_accepted_stream_entry,
+    0
+  );
 
   return peer;
 }
@@ -341,11 +371,14 @@ static void quic_server_peer_state_detach(quic_server_peer_state *peer)
     peer->cred = NULL;
   }
 
+  zend_llist_clean(&peer->accepted_streams);
+
   ZEND_HASH_FOREACH_PTR(&peer->streams, state) {
     quic_stream_state_detach(state);
     quic_stream_state_release(state);
   } ZEND_HASH_FOREACH_END();
   zend_hash_destroy(&peer->streams);
+  zend_llist_destroy(&peer->accepted_streams);
 
   peer->server = NULL;
   peer->started = false;
@@ -455,9 +488,12 @@ static quic_server_peer_state *quic_server_pop_accepted_peer(
 
 static void quic_server_queue_accepted_stream_state(
   quic_server_connection_object *intern,
+  quic_server_peer_state *peer,
   quic_stream_state *state
 )
 {
+  quic_stream_state_addref(state);
+  zend_llist_prepend_element(&peer->accepted_streams, &state);
   quic_stream_state_addref(state);
   zend_llist_prepend_element(&intern->accepted_streams, &state);
 }
@@ -466,19 +502,14 @@ static quic_stream_state *quic_server_pop_accepted_stream_state(
   quic_server_connection_object *intern
 )
 {
-  quic_stream_state **state_ptr;
-  quic_stream_state *state;
+  return quic_server_pop_accepted_stream_from_queue(&intern->accepted_streams);
+}
 
-  state_ptr = zend_llist_get_last(&intern->accepted_streams);
-  if (state_ptr == NULL) {
-    return NULL;
-  }
-
-  state = *state_ptr;
-  quic_stream_state_addref(state);
-  zend_llist_remove_tail(&intern->accepted_streams);
-
-  return state;
+static quic_stream_state *quic_server_pop_peer_accepted_stream_state(
+  quic_server_peer_state *peer
+)
+{
+  return quic_server_pop_accepted_stream_from_queue(&peer->accepted_streams);
 }
 
 static quic_stream_state *quic_server_ensure_stream_state(
@@ -505,7 +536,7 @@ static quic_stream_state *quic_server_ensure_stream_state(
   }
 
   if (queue_if_new) {
-    quic_server_queue_accepted_stream_state(peer->server, state);
+    quic_server_queue_accepted_stream_state(peer->server, peer, state);
   }
 
   quic_stream_state_release(state);
@@ -2180,6 +2211,23 @@ PHP_METHOD(Quic_ServerPeer, getTimeout)
   RETURN_LONG((zend_long) delta_ms);
 }
 
+PHP_METHOD(Quic_ServerPeer, popAcceptedStream)
+{
+  quic_server_peer_object *intern = Z_QUIC_SERVER_PEER_P(ZEND_THIS);
+  quic_stream_state *state;
+
+  if (intern->peer == NULL || intern->peer->detached) {
+    RETURN_NULL();
+  }
+
+  state = quic_server_pop_peer_accepted_stream_state(intern->peer);
+  if (state == NULL) {
+    RETURN_NULL();
+  }
+
+  quic_stream_object_init(return_value, state);
+}
+
 PHP_METHOD(Quic_ServerPeer, isHandshakeComplete)
 {
   quic_server_peer_object *intern = Z_QUIC_SERVER_PEER_P(ZEND_THIS);
@@ -2287,6 +2335,7 @@ static const zend_function_entry quic_server_connection_methods[] = {
 
 static const zend_function_entry quic_server_peer_methods[] = {
   PHP_ME(Quic_ServerPeer, getTimeout, arginfo_quic_server_get_timeout, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_ServerPeer, popAcceptedStream, arginfo_quic_server_pop_accepted_stream, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerPeer, isHandshakeComplete, arginfo_quic_server_is_handshake_complete, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerPeer, close, arginfo_quic_server_close, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerPeer, getPeerAddress, arginfo_quic_server_get_address, ZEND_ACC_PUBLIC)
