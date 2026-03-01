@@ -6,9 +6,9 @@ Provide a PHP extension that exposes minimal QUIC client/server classes built on
 `ngtcp2` and `GnuTLS`, while remaining usable from userland event loops based on
 PHP streams and Fibers.
 
-The first milestone should stay intentionally small and mirror the behavior in
-the in-tree `sample_server.c` reference and the minimal loop-driven client/server
-flows already covered by the extension tests:
+The first milestone should stay intentionally small and mirror the minimal
+loop-driven client/server flows already covered by the extension tests and
+examples:
 
 - QUIC v1 over UDP
 - TLS 1.3 via GnuTLS
@@ -48,8 +48,8 @@ Related guides:
   - `gtlsclient`
   - `/usr/sbin/gtlsserver`
 - Reference behavior comes from:
-  - `sample_server.c`
   - the local PHP integration scripts under `ext/tests/`
+  - the runnable loop examples under `examples/`
 - Minimum PHP version should be `8.1` because Fiber-based loops are a target.
 
 ## Design principles
@@ -288,7 +288,7 @@ For the client side:
 - expiry handling maps to `handleExpiry()`
 - stream and handshake writes map to `flush()`
 
-From `sample_server.c`:
+For the server side:
 
 - initial `recvfrom()` and CID decode become `accept()`
 - `ngtcp2_conn_server_new()` remains server bootstrap internals
@@ -362,8 +362,7 @@ Deliverable:
 
 Deliverable:
 
-- PHP client can complete QUIC handshake against `sample_server.c` or the local
-  PHP server example
+- PHP client can complete QUIC handshake against the local PHP server example
 
 ### Phase 2: minimal stream support
 
@@ -410,7 +409,6 @@ Deliverable:
 
 ### Integration tests
 
-- PHP client -> reference `sample_server.c`
 - PHP client -> PHP server
 - certificate verification with explicit CA file
 

@@ -1,5 +1,5 @@
 --TEST--
-Quic\ClientConnection exchanges stream data with the sample server
+Quic\ClientConnection exchanges stream data with the PHP server example
 --SKIPIF--
 <?php
 if (!extension_loaded('quic')) {
@@ -17,56 +17,89 @@ if (!function_exists('proc_open')) {
     return;
 }
 
-$server = getenv('QUIC_SAMPLE_SERVER_BIN') ?: '/tmp/quic-sample-server';
-$cert = getenv('QUIC_SAMPLE_SERVER_CERT') ?: '/tmp/nghttp3-localhost.crt';
-$key = getenv('QUIC_SAMPLE_SERVER_KEY') ?: '/tmp/nghttp3-localhost.key';
-
-if (!is_file($server)) {
-    echo 'skip sample server binary not found; run ext/tests/prepare_client_integration.sh';
+if (!is_file('/tmp/nghttp3-localhost.crt') || !is_file('/tmp/nghttp3-localhost.key')) {
+    echo 'skip prepare /tmp/nghttp3-localhost.crt and /tmp/nghttp3-localhost.key first';
     return;
 }
 
-if (!is_file($cert) || !is_file($key)) {
-    echo 'skip sample server certificate files not found; run ext/tests/prepare_client_integration.sh';
+$probe = [
+    PHP_BINARY,
+    '-d',
+    'extension=' . dirname(__DIR__) . '/modules/quic.so',
+    '-r',
+    'new Quic\ServerConnection("127.0.0.1", 0);',
+];
+$descriptors = [
+    1 => ['pipe', 'w'],
+    2 => ['pipe', 'w'],
+];
+$process = proc_open($probe, $descriptors, $pipes, __DIR__, [
+    'PATH' => getenv('PATH') ?: '',
+    'HOME' => getenv('HOME') ?: '',
+    'LANG' => getenv('LANG') ?: 'C',
+]);
+if (!is_resource($process)) {
+    echo 'skip proc_open probe failed';
     return;
+}
+fclose($pipes[1]);
+$stderr = stream_get_contents($pipes[2]);
+fclose($pipes[2]);
+$status = proc_close($process);
+if ($status !== 0) {
+    echo 'skip child php cannot bind UDP socket in this environment';
 }
 ?>
 --FILE--
 <?php
-$server = getenv('QUIC_SAMPLE_SERVER_BIN') ?: '/tmp/quic-sample-server';
-$cert = getenv('QUIC_SAMPLE_SERVER_CERT') ?: '/tmp/nghttp3-localhost.crt';
-$key = getenv('QUIC_SAMPLE_SERVER_KEY') ?: '/tmp/nghttp3-localhost.key';
-$port = getenv('QUIC_SAMPLE_SERVER_PORT') ?: '18443';
+$server = dirname(__DIR__, 2) . '/examples/server_loop.php';
+$extension = dirname(__DIR__) . '/modules/quic.so';
+$cert = '/tmp/nghttp3-localhost.crt';
+$key = '/tmp/nghttp3-localhost.key';
 $response = 'integration response';
 
 $descriptors = [
-    0 => ['pipe', 'r'],
     1 => ['pipe', 'w'],
     2 => ['pipe', 'w'],
 ];
 
 $command = [
+    PHP_BINARY,
+    '-d',
+    'extension=' . $extension,
     $server,
-    '--host', '127.0.0.1',
-    '--port', $port,
-    '--cert', $cert,
-    '--key', $key,
-    '--response', $response,
+    '0',
+    $cert,
+    $key,
+    $response . "\n",
 ];
 
-$proc = proc_open($command, $descriptors, $pipes);
+$env = [
+    'PATH' => getenv('PATH') ?: '',
+    'HOME' => getenv('HOME') ?: '',
+    'LANG' => getenv('LANG') ?: 'C',
+];
+
+$proc = proc_open($command, $descriptors, $pipes, __DIR__, $env);
 if (!is_resource($proc)) {
-    throw new RuntimeException('failed to start sample server');
+    throw new RuntimeException('failed to start php server example');
 }
 
-fclose($pipes[0]);
 stream_set_blocking($pipes[1], false);
+stream_set_blocking($pipes[2], true);
+
+$listening = stream_get_line($pipes[2], 4096, PHP_EOL);
+if (!is_string($listening) || !preg_match('/:(\d+)$/', trim($listening), $matches)) {
+    throw new RuntimeException('failed to read server port');
+}
+
+$port = (int) $matches[1];
 stream_set_blocking($pipes[2], false);
+$serverBody = '';
+$serverError = '';
 
 try {
-    usleep(200000);
-
-    $client = new Quic\ClientConnection('127.0.0.1', (int) $port, [
+    $client = new Quic\ClientConnection('127.0.0.1', $port, [
         'verify_peer' => false,
     ]);
     $socket = $client->getStream();
@@ -117,15 +150,21 @@ try {
     var_dump($stream instanceof Quic\Stream);
     var_dump($body);
 } finally {
-    proc_terminate($proc);
-    stream_get_contents($pipes[1]);
-    stream_get_contents($pipes[2]);
+    $status = proc_get_status($proc);
+    if ($status['running']) {
+        proc_terminate($proc);
+    }
+    $serverBody = trim(stream_get_contents($pipes[1]));
+    $serverError = stream_get_contents($pipes[2]);
     fclose($pipes[1]);
     fclose($pipes[2]);
     proc_close($proc);
 }
+
+var_dump($serverBody);
 ?>
 --EXPECT--
 bool(true)
 bool(true)
 string(20) "integration response"
+string(4) "ping"

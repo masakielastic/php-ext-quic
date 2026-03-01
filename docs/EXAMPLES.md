@@ -8,6 +8,8 @@ All examples assume:
 - a certificate and key are available, for example:
   - `/tmp/nghttp3-localhost.crt`
   - `/tmp/nghttp3-localhost.key`
+- test certificates can be created with:
+  - `ext/tests/prepare_test_certs.sh`
 
 ## Single client
 
