@@ -128,6 +128,11 @@ same logic that backs the PHPT integration tests without going through
 - opens two streams on one peer
 - verifies that `ServerPeer::popAcceptedStream()` preserves stream open order
 
+`ext/tests/tls_failure_integration.php`
+
+- exercises missing CA file, hostname verification failure, and missing server
+  cert/key paths
+
 ## Notes
 
 - `client_ping.php` is intentionally tolerant of `ERR_CLOSING` and
