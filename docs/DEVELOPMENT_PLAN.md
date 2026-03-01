@@ -204,6 +204,8 @@ Milestone 1 stream behavior:
 - support only bidirectional application streams
 - expose peer `RESET_STREAM` reason/final-size observation
 - expose peer write-stop observation for remote `STOP_SENDING`
+- remote `STOP_SENDING` error code remains best-effort because ngtcp2 does not
+  expose a dedicated peer-side callback for it in this backend surface
 - no per-stream flow-control API exposed to PHP initially
 
 ## Userland integration model

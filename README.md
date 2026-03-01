@@ -93,9 +93,9 @@ Streams:
 - `close()`
 
 `Quic\Stream` currently exposes peer-originated `RESET_STREAM` details. Remote
-`STOP_SENDING` is surfaced as peer write-stop state. The error code may remain
-`null` if ngtcp2 only exposes the stop via `ERR_STREAM_SHUT_WR` before a later
-close callback carries an application error code.
+`STOP_SENDING` is surfaced as peer write-stop state. ngtcp2's
+`stream_stop_sending` callback is for locally initiated read shutdown, not the
+remote peer's frame, so the error code can still remain `null`.
 
 ## Core rule
 
