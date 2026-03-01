@@ -176,3 +176,4 @@ The repository contains runnable examples:
 
 - `examples/client_ping.php`
 - `examples/server_loop.php`
+- `examples/server_multi_peer_loop.php`
