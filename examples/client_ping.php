@@ -22,6 +22,17 @@ $stream = null;
 $response = '';
 $deadline = microtime(true) + 5.0;
 
+$isExpectedClose = static function (Throwable $e, bool $streamOpened): bool {
+    if (!($e instanceof Quic\ProtocolException)) {
+        return false;
+    }
+
+    return $streamOpened && (
+        str_contains($e->getMessage(), 'ERR_CLOSING') ||
+        str_contains($e->getMessage(), 'ERR_DRAINING')
+    );
+};
+
 while (microtime(true) < $deadline) {
     $client->flush();
 
@@ -51,11 +62,33 @@ while (microtime(true) < $deadline) {
     }
 
     if ($ready === 0) {
-        $client->handleExpiry();
+        try {
+            $client->handleExpiry();
+        } catch (Throwable $e) {
+            if ($isExpectedClose($e, $stream instanceof Quic\Stream)) {
+                if ($stream instanceof Quic\Stream) {
+                    $response .= $stream->read();
+                }
+                break;
+            }
+
+            throw $e;
+        }
         continue;
     }
 
-    $client->handleReadable();
+    try {
+        $client->handleReadable();
+    } catch (Throwable $e) {
+        if ($isExpectedClose($e, $stream instanceof Quic\Stream)) {
+            if ($stream instanceof Quic\Stream) {
+                $response .= $stream->read();
+            }
+            break;
+        }
+
+        throw $e;
+    }
 }
 
 if ($response !== '') {
