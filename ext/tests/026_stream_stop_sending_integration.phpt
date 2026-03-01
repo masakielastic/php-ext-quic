@@ -2,14 +2,12 @@
 Quic\Stream exposes peer STOP_SENDING via write-stop observation
 --SKIPIF--
 <?php
-if (!extension_loaded('quic')) {
-    echo "skip extension not loaded";
-    return;
-}
-if (!is_file('/tmp/nghttp3-localhost.crt') || !is_file('/tmp/nghttp3-localhost.key')) {
-    echo 'skip prepare /tmp/nghttp3-localhost.crt and /tmp/nghttp3-localhost.key first';
-    return;
-}
+require __DIR__ . '/integration_skipif.inc';
+quic_integration_skipif([
+    'require_env' => true,
+    'require_certs' => true,
+    'probe_bind' => true,
+]);
 ?>
 --FILE--
 <?php

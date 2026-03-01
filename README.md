@@ -258,14 +258,18 @@ cd ext
 env QUIC_RUN_INTEGRATION_TESTS=1 make test TESTS='tests/006_client_stream_integration.phpt'
 ```
 
-Some integration PHPTs skip in environments where child PHP processes cannot
-bind UDP sockets.
+Integration PHPTs are opt-in wrappers. They can still skip when the
+`run-tests.php` PHP process cannot bind UDP sockets, even if
+`QUIC_RUN_INTEGRATION_TESTS=1` is set.
 
 CI-style local run:
 
 ```bash
 sh ./ext/tests/run_ci.sh
 ```
+
+`run_ci.sh` is the authoritative integration path. It runs the direct
+integration scripts without depending on PHPT child-process constraints.
 
 ## Documentation
 

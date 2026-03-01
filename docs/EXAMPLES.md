@@ -131,7 +131,13 @@ php -d extension=/home/masakielastic/php-ext-quic/ext/modules/quic.so \
 
 The direct integration scripts under `ext/tests/` are useful when you want the
 same logic that backs the PHPT integration tests without going through
-`run-tests.php`.
+`run-tests.php`. `sh ext/tests/run_ci.sh` uses these scripts as the primary
+integration path.
+
+`ext/tests/client_stream_integration.php`
+
+- starts `examples/server_loop.php` in a child process
+- exercises the client-only integration path against the PHP example server
 
 `ext/tests/server_client_integration.php`
 

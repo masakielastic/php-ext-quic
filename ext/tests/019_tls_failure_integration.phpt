@@ -2,13 +2,12 @@
 QUIC TLS failure paths surface predictable exceptions
 --SKIPIF--
 <?php
-if (!extension_loaded('quic')) {
-    echo 'skip extension not loaded';
-    return;
-}
-if (!is_file('/tmp/nghttp3-localhost.crt') || !is_file('/tmp/nghttp3-localhost.key')) {
-    echo 'skip prepare /tmp/nghttp3-localhost.crt and /tmp/nghttp3-localhost.key first';
-}
+require __DIR__ . '/integration_skipif.inc';
+quic_integration_skipif([
+    'require_env' => true,
+    'require_certs' => true,
+    'probe_bind' => true,
+]);
 ?>
 --FILE--
 <?php
