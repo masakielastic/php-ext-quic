@@ -1,5 +1,8 @@
 <?php
 
+// This script intentionally exercises the listener-level compatibility path.
+// New code should prefer popAcceptedPeer() + ServerPeer::popAcceptedStream().
+
 $server = new Quic\ServerConnection('127.0.0.1', 0, [
     'certfile' => '/tmp/nghttp3-localhost.crt',
     'keyfile' => '/tmp/nghttp3-localhost.key',

@@ -40,6 +40,10 @@ Compatibility helpers on `ServerConnection`, such as `getTimeout()`,
 accepted live peer. They are useful for simple single-peer flows, but they are
 not the preferred API once multiple peers are active.
 
+If you still use `ServerConnection::popAcceptedStream()`, treat it as the same
+kind of compatibility path: acceptable for small single-peer scripts, but not
+the preferred shape once you keep peer objects around.
+
 ## Client loop shape
 
 ```php
