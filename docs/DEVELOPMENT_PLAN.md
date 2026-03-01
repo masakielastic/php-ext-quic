@@ -130,10 +130,22 @@ Initial methods:
 - `handleExpiry(): void`
 - `flush(): void`
 - `getTimeout(): ?int`
+- `isHandshakeComplete(): bool`
 - `popAcceptedPeer(): ?Quic\ServerPeer`
 - `popAcceptedStream(): ?Quic\Stream`
 - `close(?int $errorCode = null, string $reason = ""): void`
+- `getPeerAddress(): array`
 - `getLocalAddress(): array`
+
+Notes:
+
+- `getTimeout()` on `ServerConnection` returns the earliest listener-wide timer
+  across live peers.
+- `isHandshakeComplete()` and `getPeerAddress()` on `ServerConnection` are
+  compatibility helpers for simple flows and refer to the most recently
+  accepted live peer.
+- New code that tracks more than one peer should prefer `Quic\ServerPeer` for
+  peer-specific state.
 
 Options for milestone 1:
 
@@ -155,6 +167,11 @@ Initial methods:
 - `close(?int $errorCode = null, string $reason = ""): void`
 - `getPeerAddress(): array`
 - `getLocalAddress(): array`
+
+Notes:
+
+- `Quic\ServerPeer` is the preferred place to read peer-specific state.
+- The listener keeps driving UDP I/O; the peer object does not own a socket.
 
 ### `Quic\Stream`
 

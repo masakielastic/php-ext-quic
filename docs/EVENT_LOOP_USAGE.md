@@ -22,6 +22,24 @@ All QUIC I/O must still go through:
 - `handleExpiry()`
 - `flush()`
 
+## Server object split
+
+For servers, treat `Quic\ServerConnection` as the listener and
+`Quic\ServerPeer` as the per-peer state handle.
+
+Preferred usage:
+
+- use `ServerConnection::getStream()`, `handleReadable()`, `handleExpiry()`,
+  and `flush()` to drive the shared UDP listener
+- use `ServerConnection::popAcceptedPeer()` to obtain newly accepted peers
+- use `ServerPeer` for peer-specific state such as handshake completion or peer
+  address
+
+Compatibility helpers on `ServerConnection`, such as `getTimeout()`,
+`isHandshakeComplete()`, and `getPeerAddress()`, refer to the most recently
+accepted live peer. They are useful for simple single-peer flows, but they are
+not the preferred API once multiple peers are active.
+
 ## Client loop shape
 
 ```php
@@ -116,7 +134,7 @@ while (true) {
     $read = [$socket];
     $write = null;
     $except = null;
-    $timeout = $server->getTimeout() ?? 50;
+    $timeout = $peer?->getTimeout() ?? $server->getTimeout() ?? 50;
 
     $ready = stream_select(
         $read,
