@@ -87,10 +87,15 @@ $server = new Quic\ServerConnection('127.0.0.1', 4433, [
 ]);
 
 $socket = $server->getStream();
+$peer = null;
 $accepted = null;
 
 while (true) {
     $server->flush();
+
+    if (!$peer instanceof Quic\ServerPeer) {
+        $peer = $server->popAcceptedPeer();
+    }
 
     if ($accepted === null) {
         $accepted = $server->popAcceptedStream();

@@ -24,6 +24,7 @@ $server = new Quic\ServerConnection('127.0.0.1', $port, [
 ]);
 
 $socket = $server->getStream();
+$peer = null;
 $accepted = null;
 $requestBody = '';
 
@@ -31,6 +32,14 @@ fwrite(STDERR, "listening on 127.0.0.1:" . $server->getLocalAddress()['port'] . 
 
 while (true) {
     $server->flush();
+
+    if (!($peer instanceof Quic\ServerPeer)) {
+        $peer = $server->popAcceptedPeer();
+        if ($peer instanceof Quic\ServerPeer) {
+            $peerAddress = $peer->getPeerAddress();
+            fwrite(STDERR, "accepted peer " . $peerAddress['address'] . ':' . $peerAddress['port'] . PHP_EOL);
+        }
+    }
 
     if ($accepted === null) {
         $accepted = $server->popAcceptedStream();

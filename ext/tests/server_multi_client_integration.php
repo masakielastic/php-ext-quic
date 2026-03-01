@@ -7,6 +7,7 @@ function driveExchange(
     $clientStream,
     string $request,
 ): array {
+    $acceptedPeer = null;
     $opened = false;
     $accepted = false;
     $responded = false;
@@ -21,6 +22,13 @@ function driveExchange(
     while (microtime(true) < $deadline) {
         $client->flush();
         $server->flush();
+
+        if (!$acceptedPeer instanceof Quic\ServerPeer) {
+            $candidate = $server->popAcceptedPeer();
+            if ($candidate instanceof Quic\ServerPeer) {
+                $acceptedPeer = $candidate;
+            }
+        }
 
         if (!$accepted) {
             $candidate = $server->popAcceptedStream();
@@ -102,7 +110,9 @@ function driveExchange(
 
     return [
         'client_handshake' => $client->isHandshakeComplete(),
+        'peer_handshake' => $acceptedPeer?->isHandshakeComplete() ?? false,
         'accepted' => $accepted,
+        'peer_address' => $acceptedPeer?->getPeerAddress() ?? [],
         'request' => $serverRequest,
         'response' => $body,
     ];
@@ -128,18 +138,19 @@ $client2 = new Quic\ClientConnection('127.0.0.1', $port, [
 $client2Stream = $client2->getStream();
 $exchange2 = driveExchange($server, $serverStream, $client2, $client2Stream, "ping-2\n");
 
-$peerAddress = $server->getPeerAddress();
+$peerAddress = $exchange2['peer_address'];
 $client2Local = $client2->getLocalAddress();
 
 var_dump($exchange1['client_handshake']);
+var_dump($exchange1['peer_handshake']);
 var_dump($exchange1['accepted']);
 var_dump($exchange1['request']);
 var_dump($exchange1['response']);
 var_dump($exchange2['client_handshake']);
+var_dump($exchange2['peer_handshake']);
 var_dump($exchange2['accepted']);
 var_dump($exchange2['request']);
 var_dump($exchange2['response']);
-var_dump($server->isHandshakeComplete());
 var_dump($peerAddress['port'] === $client2Local['port']);
 
 fclose($client2Stream);

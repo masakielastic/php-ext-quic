@@ -84,6 +84,7 @@ Register namespaced classes:
 
 - `Quic\ClientConnection`
 - `Quic\ServerConnection`
+- `Quic\ServerPeer`
 - `Quic\Stream`
 
 ### `Quic\ClientConnection`
@@ -118,7 +119,7 @@ Options for milestone 1:
 
 ### `Quic\ServerConnection`
 
-Purpose: a single accepted server-side QUIC connection bound to one UDP peer.
+Purpose: UDP listener plus peer registry for server-side QUIC connections.
 
 Initial methods:
 
@@ -129,10 +130,9 @@ Initial methods:
 - `handleExpiry(): void`
 - `flush(): void`
 - `getTimeout(): ?int`
-- `isHandshakeComplete(): bool`
+- `popAcceptedPeer(): ?Quic\ServerPeer`
 - `popAcceptedStream(): ?Quic\Stream`
 - `close(?int $errorCode = null, string $reason = ""): void`
-- `getPeerAddress(): array`
 - `getLocalAddress(): array`
 
 Options for milestone 1:
@@ -143,6 +143,18 @@ Options for milestone 1:
 - `verify_peer`
 - `response_mode` is not needed in the public API and should stay internal to
   tests/examples
+
+### `Quic\ServerPeer`
+
+Purpose: one accepted QUIC peer tracked by `Quic\ServerConnection`.
+
+Initial methods:
+
+- `getTimeout(): ?int`
+- `isHandshakeComplete(): bool`
+- `close(?int $errorCode = null, string $reason = ""): void`
+- `getPeerAddress(): array`
+- `getLocalAddress(): array`
 
 ### `Quic\Stream`
 
