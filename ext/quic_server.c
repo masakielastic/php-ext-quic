@@ -1988,38 +1988,6 @@ PHP_METHOD(Quic_ServerConnection, __construct)
   }
 }
 
-PHP_METHOD(Quic_ServerConnection, getStream)
-{
-  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
-  php_stream *stream;
-  php_socket_t dup_fd;
-
-  if (intern->fd < 0) {
-    zend_throw_exception_ex(quic_exception_ce, 0, "Socket is closed");
-    RETURN_THROWS();
-  }
-
-  dup_fd = dup(intern->fd);
-  if (dup_fd < 0) {
-    zend_throw_exception_ex(
-      quic_exception_ce,
-      errno,
-      "dup() failed: %s",
-      strerror(errno)
-    );
-    RETURN_THROWS();
-  }
-
-  stream = php_stream_sock_open_from_socket(dup_fd, NULL);
-  if (stream == NULL) {
-    close(dup_fd);
-    zend_throw_exception_ex(quic_exception_ce, 0, "Failed to create PHP stream from socket");
-    RETURN_THROWS();
-  }
-
-  php_stream_to_zval(stream, return_value);
-}
-
 PHP_METHOD(Quic_ServerConnection, getPollStream)
 {
   quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
@@ -2133,29 +2101,6 @@ PHP_METHOD(Quic_ServerConnection, getTimeout)
   RETURN_LONG((zend_long) delta_ms);
 }
 
-PHP_METHOD(Quic_ServerConnection, isHandshakeComplete)
-{
-  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
-  quic_server_peer_state *peer;
-
-  peer = quic_server_get_last_live_peer(intern);
-
-  RETURN_BOOL(peer != NULL && peer->handshake_complete);
-}
-
-PHP_METHOD(Quic_ServerConnection, popAcceptedStream)
-{
-  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
-  quic_stream_state *state;
-
-  state = quic_server_pop_accepted_stream_state(intern);
-  if (state == NULL) {
-    RETURN_NULL();
-  }
-
-  quic_stream_object_init(return_value, state);
-}
-
 PHP_METHOD(Quic_ServerConnection, popAcceptedPeer)
 {
   quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
@@ -2230,20 +2175,6 @@ PHP_METHOD(Quic_ServerConnection, close)
   if (!ok) {
     RETURN_THROWS();
   }
-}
-
-PHP_METHOD(Quic_ServerConnection, getPeerAddress)
-{
-  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
-  quic_server_peer_state *peer;
-
-  peer = quic_server_get_last_live_peer(intern);
-
-  quic_server_address_to_array(
-    return_value,
-    peer != NULL ? (const struct sockaddr *) &peer->peer_addr : NULL,
-    peer != NULL ? peer->peer_addrlen : 0
-  );
 }
 
 PHP_METHOD(Quic_ServerConnection, getLocalAddress)
@@ -2392,17 +2323,13 @@ PHP_METHOD(Quic_ServerPeer, close)
 static const zend_function_entry quic_server_connection_methods[] = {
   PHP_ME(Quic_ServerConnection, __construct, arginfo_quic_server_construct, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, getPollStream, arginfo_quic_server_get_stream, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ServerConnection, getStream, arginfo_quic_server_get_stream, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ServerConnection, accept, arginfo_quic_server_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, handleReadable, arginfo_quic_server_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, handleExpiry, arginfo_quic_server_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, flush, arginfo_quic_server_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, getTimeout, arginfo_quic_server_get_timeout, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ServerConnection, isHandshakeComplete, arginfo_quic_server_is_handshake_complete, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ServerConnection, popAcceptedPeer, arginfo_quic_server_pop_accepted_peer, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ServerConnection, popAcceptedStream, arginfo_quic_server_pop_accepted_stream, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ServerConnection, close, arginfo_quic_server_close, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ServerConnection, getPeerAddress, arginfo_quic_server_get_address, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ServerConnection, getLocalAddress, arginfo_quic_server_get_address, ZEND_ACC_PUBLIC)
   PHP_FE_END
 };

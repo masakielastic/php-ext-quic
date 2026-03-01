@@ -95,11 +95,6 @@ same logic that backs the PHPT integration tests without going through
 - single client and single server peer
 - uses the preferred `ServerPeer` acceptance path
 
-`ext/tests/server_listener_compat_integration.php`
-
-- single client and single server peer
-- intentionally exercises the listener-level compatibility helpers
-
 `ext/tests/server_multi_client_integration.php`
 
 - one listener serving two clients in sequence
@@ -113,14 +108,12 @@ same logic that backs the PHPT integration tests without going through
 `ext/tests/server_stream_queue_order_integration.php`
 
 - opens two streams on one peer
-- verifies that listener-level and peer-level accepted stream queues expose the
-  same order
+- verifies that `ServerPeer::popAcceptedStream()` preserves stream open order
 
 ## Notes
 
 - `client_ping.php` is intentionally tolerant of `ERR_CLOSING` and
   `ERR_DRAINING` after the request stream has been opened so short demos can
   exit cleanly.
-- For new server code, prefer `popAcceptedPeer()` and
-  `ServerPeer::popAcceptedStream()` over the listener-level
-  `ServerConnection::popAcceptedStream()` compatibility path.
+- For server code, use `popAcceptedPeer()` and `ServerPeer::popAcceptedStream()`
+  as the stable acceptance path.

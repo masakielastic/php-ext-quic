@@ -23,9 +23,6 @@ All QUIC I/O must still go through:
 - `handleExpiry()`
 - `flush()`
 
-`getStream()` is kept as a deprecated compatibility alias, but new code should
-prefer `getPollStream()` so the intended use is explicit.
-
 ## Server object split
 
 For servers, treat `Quic\ServerConnection` as the listener and
@@ -38,24 +35,6 @@ Preferred usage:
 - use `ServerConnection::popAcceptedPeer()` to obtain newly accepted peers
 - use `ServerPeer` for peer-specific state such as handshake completion or peer
   address
-
-Compatibility helpers on `ServerConnection`, such as `getTimeout()`,
-`isHandshakeComplete()`, and `getPeerAddress()`, refer to the most recently
-accepted live peer. They are useful for simple single-peer flows, but they are
-not the preferred API once multiple peers are active.
-
-If you still use `ServerConnection::popAcceptedStream()`, treat it as the same
-kind of compatibility path: acceptable for small single-peer scripts, but not
-the preferred shape once you keep peer objects around.
-
-`ServerConnection::isHandshakeComplete()`, `ServerConnection::getPeerAddress()`,
-and `ServerConnection::popAcceptedStream()` are now deprecated compatibility
-helpers. Keep them only for older single-peer code paths.
-
-Do not mix `ServerConnection::popAcceptedStream()` and
-`ServerPeer::popAcceptedStream()` in the same control flow. They observe the
-same accepted stream states through different queues, so mixing them makes
-ownership and ordering harder to reason about.
 
 ## Client loop shape
 

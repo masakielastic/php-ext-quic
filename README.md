@@ -57,7 +57,6 @@ Client:
 
 - `Quic\ClientConnection`
 - `getPollStream()`
-- `getStream()` as a deprecated compatibility alias
 - `startHandshake()`
 - `handleReadable()`
 - `handleExpiry()`
@@ -74,13 +73,6 @@ Server:
 - `popAcceptedPeer()`
 - `ServerPeer::popAcceptedStream()`
 - listener-driven `handleReadable()`, `handleExpiry()`, `flush()`
-
-Deprecated compatibility helpers on `Quic\ServerConnection`:
-
-- `getStream()`
-- `isHandshakeComplete()`
-- `popAcceptedStream()`
-- `getPeerAddress()`
 
 Streams:
 

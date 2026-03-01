@@ -16,7 +16,6 @@ $client->startHandshake();
 
 $peer = null;
 $opened = false;
-$listenerIds = [];
 $peerIds = [];
 $deadline = microtime(true) + 5.0;
 
@@ -40,15 +39,6 @@ while (microtime(true) < $deadline) {
         $opened = true;
     }
 
-    while (count($listenerIds) < 2) {
-        $candidate = $server->popAcceptedStream();
-        if (!$candidate instanceof Quic\Stream) {
-            break;
-        }
-
-        $listenerIds[] = $candidate->getId();
-    }
-
     while ($peer instanceof Quic\ServerPeer && count($peerIds) < 2) {
         $candidate = $peer->popAcceptedStream();
         if (!$candidate instanceof Quic\Stream) {
@@ -58,7 +48,7 @@ while (microtime(true) < $deadline) {
         $peerIds[] = $candidate->getId();
     }
 
-    if (count($listenerIds) === 2 && count($peerIds) === 2) {
+    if (count($peerIds) === 2) {
         break;
     }
 
@@ -97,9 +87,8 @@ while (microtime(true) < $deadline) {
 
 var_dump($peer?->isHandshakeComplete() ?? false);
 var_dump($client->isHandshakeComplete());
-var_dump($listenerIds);
 var_dump($peerIds);
-var_dump($listenerIds === $peerIds);
+var_dump($peerIds === [0, 4]);
 
 fclose($serverStream);
 fclose($clientStream);

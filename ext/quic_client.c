@@ -1378,38 +1378,6 @@ PHP_METHOD(Quic_ClientConnection, __construct)
   }
 }
 
-PHP_METHOD(Quic_ClientConnection, getStream)
-{
-  quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
-  php_stream *stream;
-  php_socket_t dup_fd;
-
-  if (intern->fd < 0) {
-    zend_throw_exception_ex(quic_exception_ce, 0, "Connection is closed");
-    RETURN_THROWS();
-  }
-
-  dup_fd = dup(intern->fd);
-  if (dup_fd < 0) {
-    zend_throw_exception_ex(
-      quic_exception_ce,
-      errno,
-      "dup() failed: %s",
-      strerror(errno)
-    );
-    RETURN_THROWS();
-  }
-
-  stream = php_stream_sock_open_from_socket(dup_fd, NULL);
-  if (stream == NULL) {
-    close(dup_fd);
-    zend_throw_exception_ex(quic_exception_ce, 0, "Failed to expose UDP socket as a PHP stream");
-    RETURN_THROWS();
-  }
-
-  php_stream_to_zval(stream, return_value);
-}
-
 PHP_METHOD(Quic_ClientConnection, getPollStream)
 {
   quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
@@ -1658,7 +1626,6 @@ PHP_METHOD(Quic_ClientConnection, getLocalAddress)
 static const zend_function_entry quic_client_connection_methods[] = {
   PHP_ME(Quic_ClientConnection, __construct, arginfo_quic_client_construct, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ClientConnection, getPollStream, arginfo_quic_client_get_stream, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ClientConnection, getStream, arginfo_quic_client_get_stream, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ClientConnection, startHandshake, arginfo_quic_client_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ClientConnection, handleReadable, arginfo_quic_client_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ClientConnection, handleExpiry, arginfo_quic_client_void, ZEND_ACC_PUBLIC)

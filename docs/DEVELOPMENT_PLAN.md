@@ -102,7 +102,6 @@ Initial methods:
 - `__construct(string $host, int|string $port, array $options = [])`
 - `getPollStream()`: returns the UDP socket as a PHP stream resource for
   readiness monitoring
-- `getStream()`: deprecated compatibility alias for `getPollStream()`
 - `startHandshake(): void`
 - `handleReadable(): void`
 - `handleExpiry(): void`
@@ -133,33 +132,19 @@ Initial methods:
 
 - `__construct(string $host, int|string $port, array $options = [])`
 - `getPollStream()`
-- `getStream()` deprecated compatibility alias
 - `accept(): void`
 - `handleReadable(): void`
 - `handleExpiry(): void`
 - `flush(): void`
 - `getTimeout(): ?int`
-- `isHandshakeComplete(): bool`
 - `popAcceptedPeer(): ?Quic\ServerPeer`
-- `popAcceptedStream(): ?Quic\Stream`
 - `close(?int $errorCode = null, string $reason = ""): void`
-- `getPeerAddress(): array`
 - `getLocalAddress(): array`
 
 Notes:
 
 - `getTimeout()` on `ServerConnection` returns the earliest listener-wide timer
   across live peers.
-- `isHandshakeComplete()` and `getPeerAddress()` on `ServerConnection` are
-  compatibility helpers for simple flows and refer to the most recently
-  accepted live peer.
-- `popAcceptedStream()` on `ServerConnection` is also a compatibility helper.
-  New code should prefer `ServerPeer::popAcceptedStream()`.
-- These compatibility helpers stay available for milestone 1 compatibility, but
-  they are deprecated and new code should not rely on them.
-- `ServerConnection::popAcceptedStream()` and `ServerPeer::popAcceptedStream()`
-  should not be mixed in the same server flow. They expose the same accepted
-  stream states through different queues for compatibility purposes.
 - New code that tracks more than one peer should prefer `Quic\ServerPeer` for
   peer-specific state.
 

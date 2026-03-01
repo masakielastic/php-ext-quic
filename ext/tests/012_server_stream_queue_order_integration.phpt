@@ -1,5 +1,5 @@
 --TEST--
-Quic server listener and peer stream queues preserve the same stream order
+Quic server peer queue preserves accepted stream order
 --SKIPIF--
 <?php
 if (!extension_loaded('quic')) {
@@ -88,12 +88,6 @@ echo $stdout;
 --EXPECT--
 bool(true)
 bool(true)
-array(2) {
-  [0]=>
-  int(0)
-  [1]=>
-  int(4)
-}
 array(2) {
   [0]=>
   int(0)
