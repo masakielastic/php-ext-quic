@@ -96,8 +96,8 @@ The same primitives also work with a Fiber-based scheduler. The inner Fiber can
 own QUIC state transitions while the outer loop waits on `getPollStream()` and
 resumes the Fiber with either a readability or timeout event.
 
-See `examples/client_fiber_ping.php` for a minimal runnable version of this
-pattern.
+See `examples/fiber_scheduler.php` for the small scheduler adapter and
+`examples/client_fiber_ping.php` for a minimal runnable client built on it.
 
 ## Server loop shape
 
@@ -174,14 +174,15 @@ The same split also works on the server side. The inner Fiber can own
 `handleExpiry()`, while the outer loop only waits on `getPollStream()` and
 resumes the Fiber with timeout or readability.
 
-See `examples/server_fiber_loop.php` for a minimal runnable version of this
-pattern.
+See `examples/fiber_scheduler.php` and `examples/server_fiber_loop.php` for the
+minimal adapter + server split.
 
 ## Reference scripts
 
 The repository contains runnable examples:
 
 - `examples/client_ping.php`
+- `examples/fiber_scheduler.php`
 - `examples/client_fiber_ping.php`
 - `examples/server_loop.php`
 - `examples/server_fiber_loop.php`

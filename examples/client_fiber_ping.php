@@ -2,15 +2,14 @@
 
 declare(strict_types=1);
 
+require __DIR__ . '/fiber_scheduler.php';
+
 if ($argc < 3) {
     fwrite(STDERR, "Usage: php client_fiber_ping.php <host> <port> [message]\n");
     exit(1);
 }
 
-if (!class_exists(Fiber::class)) {
-    fwrite(STDERR, "This example requires Fiber support.\n");
-    exit(1);
-}
+quic_require_fiber_support();
 
 $host = $argv[1];
 $port = (int) $argv[2];
@@ -59,10 +58,7 @@ $fiber = new Fiber(static function () use ($client, $socket, $message, $isExpect
             }
         }
 
-        $event = Fiber::suspend([
-            'stream' => $socket,
-            'timeout' => $client->getTimeout() ?? 50,
-        ]);
+        $event = quic_fiber_await_poll($socket, $client->getTimeout() ?? 50);
 
         try {
             if (($event['timed_out'] ?? false) === true) {
@@ -88,42 +84,7 @@ $fiber = new Fiber(static function () use ($client, $socket, $message, $isExpect
 });
 
 try {
-    // The outer loop acts as a tiny scheduler for the suspended Fiber.
-    $wait = $fiber->start();
-
-    while (!$fiber->isTerminated()) {
-        if (
-            !is_array($wait) ||
-            !isset($wait['stream']) ||
-            !is_resource($wait['stream']) ||
-            !isset($wait['timeout']) ||
-            !is_int($wait['timeout'])
-        ) {
-            throw new RuntimeException('Fiber yielded an invalid wait request');
-        }
-
-        $read = [$wait['stream']];
-        $write = null;
-        $except = null;
-        $timeout = $wait['timeout'];
-        $ready = stream_select(
-            $read,
-            $write,
-            $except,
-            intdiv($timeout, 1000),
-            ($timeout % 1000) * 1000,
-        );
-
-        if ($ready === false) {
-            throw new RuntimeException('stream_select failed');
-        }
-
-        $wait = $fiber->resume([
-            'timed_out' => $ready === 0,
-        ]);
-    }
-
-    $response = $fiber->getReturn();
+    $response = quic_run_poll_fiber($fiber);
     if ($response !== '') {
         fwrite(STDOUT, $response);
     }

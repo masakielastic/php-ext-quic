@@ -219,6 +219,7 @@ while (true) {
 ## Examples
 
 - [examples/client_ping.php](/home/masakielastic/php-ext-quic/examples/client_ping.php)
+- [examples/fiber_scheduler.php](/home/masakielastic/php-ext-quic/examples/fiber_scheduler.php)
 - [examples/client_fiber_ping.php](/home/masakielastic/php-ext-quic/examples/client_fiber_ping.php)
 - [examples/server_loop.php](/home/masakielastic/php-ext-quic/examples/server_loop.php)
 - [examples/server_fiber_loop.php](/home/masakielastic/php-ext-quic/examples/server_fiber_loop.php)

@@ -47,6 +47,12 @@ php -d extension=/home/masakielastic/php-ext-quic/ext/modules/quic.so \
   127.0.0.1 18443 "ping\n"
 ```
 
+Shared adapter:
+
+- `examples/fiber_scheduler.php`
+- provides `quic_fiber_await_poll()` and `quic_run_poll_fiber()`
+- keeps the outer `stream_select()` loop separate from the inner QUIC Fiber
+
 ## Single peer server
 
 `examples/server_loop.php`
