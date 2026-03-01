@@ -25,16 +25,6 @@ static void quic_touch_dependencies(void)
   (void) ngtcp2_crypto_gnutls_configure_client_session;
 }
 
-void quic_throw_not_implemented(const char *method)
-{
-  zend_throw_exception_ex(
-    quic_exception_ce,
-    0,
-    "%s is not implemented yet",
-    method
-  );
-}
-
 PHP_MINIT_FUNCTION(quic)
 {
   zend_class_entry ce;

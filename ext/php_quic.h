@@ -18,6 +18,4 @@ void quic_client_register_classes(void);
 void quic_server_register_classes(void);
 void quic_stream_register_classes(void);
 
-void quic_throw_not_implemented(const char *method);
-
 #endif
