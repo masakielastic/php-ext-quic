@@ -2,6 +2,8 @@
 # include "config.h"
 #endif
 
+#include "quic_client.h"
+#include "quic_server.h"
 #include "quic_stream.h"
 
 #include <string.h>
@@ -157,6 +159,21 @@ void quic_stream_state_mark_write_progress(
   }
 }
 
+void quic_stream_state_mark_read_stopped(quic_stream_state *state)
+{
+  state->read_stopped = true;
+  state->read_buffer_len = 0;
+}
+
+void quic_stream_state_mark_write_reset(quic_stream_state *state)
+{
+  state->write_reset = true;
+  state->write_buffer_len = 0;
+  state->write_buffer_off = 0;
+  state->fin_requested = true;
+  state->fin_sent = true;
+}
+
 void quic_stream_state_mark_peer_fin(quic_stream_state *state)
 {
   state->peer_fin_received = true;
@@ -222,6 +239,45 @@ ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_quic_stream_bool, 0, 0, _IS_BOOL, 0)
 ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_quic_stream_error_code, 0, 0, 0)
+  ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, errorCode, IS_LONG, 0, "0")
+ZEND_END_ARG_INFO()
+
+static bool quic_stream_request_shutdown(
+  quic_stream_state *state,
+  uint64_t app_error_code,
+  bool stop_read,
+  bool stop_write
+)
+{
+  if (state->owner == NULL || state->closed) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Stream is closed");
+    return false;
+  }
+
+  switch (state->owner_kind) {
+    case QUIC_STREAM_OWNER_CLIENT:
+      return quic_client_shutdown_stream(
+        (quic_client_connection_object *) state->owner,
+        state,
+        app_error_code,
+        stop_read,
+        stop_write
+      );
+    case QUIC_STREAM_OWNER_SERVER:
+      return quic_server_shutdown_stream(
+        (quic_server_peer_state *) state->owner,
+        state,
+        app_error_code,
+        stop_read,
+        stop_write
+      );
+    default:
+      zend_throw_exception_ex(quic_exception_ce, 0, "Stream is detached");
+      return false;
+  }
+}
 
 PHP_METHOD(Quic_Stream, getId)
 {
@@ -313,6 +369,70 @@ PHP_METHOD(Quic_Stream, isFinished)
   RETURN_BOOL(intern->state->closed || intern->state->peer_fin_received);
 }
 
+PHP_METHOD(Quic_Stream, reset)
+{
+  quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
+  zend_long error_code = 0;
+
+  ZEND_PARSE_PARAMETERS_START(0, 1)
+    Z_PARAM_OPTIONAL
+    Z_PARAM_LONG(error_code)
+  ZEND_PARSE_PARAMETERS_END();
+
+  if (error_code < 0) {
+    zend_argument_value_error(1, "must be greater than or equal to 0");
+    RETURN_THROWS();
+  }
+
+  if (intern->state->closed || intern->state->write_reset) {
+    return;
+  }
+
+  if (!quic_stream_request_shutdown(
+        intern->state,
+        (uint64_t) error_code,
+        true,
+        true
+      )) {
+    RETURN_THROWS();
+  }
+
+  quic_stream_state_mark_read_stopped(intern->state);
+  quic_stream_state_mark_write_reset(intern->state);
+  quic_stream_state_mark_closed(intern->state);
+}
+
+PHP_METHOD(Quic_Stream, stop)
+{
+  quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
+  zend_long error_code = 0;
+
+  ZEND_PARSE_PARAMETERS_START(0, 1)
+    Z_PARAM_OPTIONAL
+    Z_PARAM_LONG(error_code)
+  ZEND_PARSE_PARAMETERS_END();
+
+  if (error_code < 0) {
+    zend_argument_value_error(1, "must be greater than or equal to 0");
+    RETURN_THROWS();
+  }
+
+  if (intern->state->closed || intern->state->read_stopped) {
+    return;
+  }
+
+  if (!quic_stream_request_shutdown(
+        intern->state,
+        (uint64_t) error_code,
+        true,
+        false
+      )) {
+    RETURN_THROWS();
+  }
+
+  quic_stream_state_mark_read_stopped(intern->state);
+}
+
 PHP_METHOD(Quic_Stream, close)
 {
   quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
@@ -331,6 +451,8 @@ static const zend_function_entry quic_stream_methods[] = {
   PHP_ME(Quic_Stream, isReadable, arginfo_quic_stream_bool, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, isWritable, arginfo_quic_stream_bool, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, isFinished, arginfo_quic_stream_bool, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_Stream, reset, arginfo_quic_stream_error_code, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_Stream, stop, arginfo_quic_stream_error_code, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, close, arginfo_quic_stream_void, ZEND_ACC_PUBLIC)
   PHP_FE_END
 };

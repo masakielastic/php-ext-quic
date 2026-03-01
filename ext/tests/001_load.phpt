@@ -16,8 +16,12 @@ var_dump(class_exists(Quic\Stream::class));
 var_dump(class_exists(Quic\Exception::class));
 var_dump(method_exists(Quic\ClientConnection::class, 'getPollStream'));
 var_dump(method_exists(Quic\ServerConnection::class, 'getPollStream'));
+var_dump(method_exists(Quic\Stream::class, 'reset'));
+var_dump(method_exists(Quic\Stream::class, 'stop'));
 ?>
 --EXPECT--
+bool(true)
+bool(true)
 bool(true)
 bool(true)
 bool(true)

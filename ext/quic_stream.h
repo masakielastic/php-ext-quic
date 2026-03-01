@@ -22,6 +22,8 @@ typedef struct _quic_stream_state {
   size_t write_buffer_len;
   size_t write_buffer_cap;
   size_t write_buffer_off;
+  bool read_stopped;
+  bool write_reset;
   bool fin_requested;
   bool fin_sent;
   bool peer_fin_received;
@@ -55,6 +57,8 @@ void quic_stream_state_mark_write_progress(
   bool fin_attempted,
   bool packet_emitted
 );
+void quic_stream_state_mark_read_stopped(quic_stream_state *state);
+void quic_stream_state_mark_write_reset(quic_stream_state *state);
 void quic_stream_state_mark_peer_fin(quic_stream_state *state);
 void quic_stream_state_mark_closed(quic_stream_state *state);
 void quic_stream_state_detach(quic_stream_state *state);

@@ -202,6 +202,8 @@ Initial methods:
 - `isReadable(): bool`
 - `isWritable(): bool`
 - `isFinished(): bool`
+- `reset(int $errorCode = 0): void`
+- `stop(int $errorCode = 0): void`
 - `close(): void`
 
 Milestone 1 stream behavior:

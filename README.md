@@ -91,6 +91,8 @@ Streams:
 - `isReadable()`
 - `isWritable()`
 - `isFinished()`
+- `reset()`
+- `stop()`
 - `close()`
 
 ## Core rule

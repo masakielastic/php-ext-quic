@@ -272,7 +272,9 @@ static int quic_client_recv_stream_data_cb(
     return 0;
   }
 
-  if (datalen > 0 && !quic_stream_state_append_read(state, data, datalen)) {
+  if (!state->read_stopped &&
+      datalen > 0 &&
+      !quic_stream_state_append_read(state, data, datalen)) {
     return NGTCP2_ERR_CALLBACK_FAILURE;
   }
 
@@ -968,6 +970,45 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
       return false;
     }
   }
+}
+
+bool quic_client_shutdown_stream(
+  quic_client_connection_object *intern,
+  quic_stream_state *state,
+  uint64_t app_error_code,
+  bool stop_read,
+  bool stop_write
+)
+{
+  int rv;
+
+  if (!intern->started || intern->conn == NULL) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Handshake has not been started");
+    return false;
+  }
+
+  if (stop_read && stop_write) {
+    rv = ngtcp2_conn_shutdown_stream(intern->conn, 0, state->stream_id, app_error_code);
+  } else if (stop_read) {
+    rv = ngtcp2_conn_shutdown_stream_read(intern->conn, 0, state->stream_id, app_error_code);
+  } else if (stop_write) {
+    rv = ngtcp2_conn_shutdown_stream_write(intern->conn, 0, state->stream_id, app_error_code);
+  } else {
+    return true;
+  }
+
+  if (rv != 0) {
+    ngtcp2_ccerr_set_liberr(&intern->last_error, rv, NULL, 0);
+    zend_throw_exception_ex(
+      quic_protocol_exception_ce,
+      rv,
+      "stream shutdown failed: %s",
+      ngtcp2_strerror(rv)
+    );
+    return false;
+  }
+
+  return true;
 }
 
 static bool quic_client_write_connection_close_packet(
