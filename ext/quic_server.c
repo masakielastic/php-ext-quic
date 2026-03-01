@@ -38,10 +38,14 @@ struct _quic_server_connection_object {
   zend_string *certfile;
   zend_string *keyfile;
   zend_string *response;
-  bool started;
-  bool handshake_complete;
   struct sockaddr_storage local_addr;
   socklen_t local_addrlen;
+  struct _quic_server_peer_state *peer;
+  zend_object std;
+};
+
+typedef struct _quic_server_peer_state {
+  quic_server_connection_object *server;
   struct sockaddr_storage peer_addr;
   socklen_t peer_addrlen;
   ngtcp2_crypto_conn_ref conn_ref;
@@ -51,8 +55,9 @@ struct _quic_server_connection_object {
   ngtcp2_ccerr last_error;
   HashTable streams;
   zend_llist accepted_streams;
-  zend_object std;
-};
+  bool started;
+  bool handshake_complete;
+} quic_server_peer_state;
 
 zend_class_entry *quic_server_connection_ce;
 
@@ -77,7 +82,7 @@ static size_t quic_server_stream_key(char *buffer, size_t buffer_len, int64_t st
 }
 
 static quic_stream_state *quic_server_find_stream_state(
-  quic_server_connection_object *intern,
+  quic_server_peer_state *peer,
   int64_t stream_id
 )
 {
@@ -86,11 +91,11 @@ static quic_stream_state *quic_server_find_stream_state(
 
   key_len = quic_server_stream_key(key, sizeof(key), stream_id);
 
-  return zend_hash_str_find_ptr(&intern->streams, key, key_len);
+  return zend_hash_str_find_ptr(&peer->streams, key, key_len);
 }
 
 static bool quic_server_register_stream_state(
-  quic_server_connection_object *intern,
+  quic_server_peer_state *peer,
   quic_stream_state *state
 )
 {
@@ -100,7 +105,7 @@ static bool quic_server_register_stream_state(
   key_len = quic_server_stream_key(key, sizeof(key), state->stream_id);
 
   quic_stream_state_addref(state);
-  if (zend_hash_str_update_ptr(&intern->streams, key, key_len, state) == NULL) {
+  if (zend_hash_str_update_ptr(&peer->streams, key, key_len, state) == NULL) {
     quic_stream_state_release(state);
     zend_throw_exception_ex(quic_exception_ce, 0, "Failed to register stream state");
     return false;
@@ -110,12 +115,12 @@ static bool quic_server_register_stream_state(
 }
 
 static quic_stream_state *quic_server_get_next_writable_stream(
-  quic_server_connection_object *intern
+  quic_server_peer_state *peer
 )
 {
   quic_stream_state *state;
 
-  ZEND_HASH_FOREACH_PTR(&intern->streams, state) {
+  ZEND_HASH_FOREACH_PTR(&peer->streams, state) {
     if (quic_stream_state_has_pending_write(state)) {
       return state;
     }
@@ -131,64 +136,121 @@ static void quic_server_release_accepted_stream_entry(void *data)
   quic_stream_state_release(state);
 }
 
+static quic_server_peer_state *quic_server_peer_state_create(quic_server_connection_object *server)
+{
+  quic_server_peer_state *peer;
+
+  peer = ecalloc(1, sizeof(quic_server_peer_state));
+  peer->server = server;
+  peer->cred = NULL;
+  peer->session = NULL;
+  peer->conn = NULL;
+  peer->peer_addrlen = 0;
+  peer->started = false;
+  peer->handshake_complete = false;
+  ngtcp2_ccerr_default(&peer->last_error);
+  zend_hash_init(&peer->streams, 8, NULL, NULL, 0);
+  zend_llist_init(
+    &peer->accepted_streams,
+    sizeof(quic_stream_state *),
+    quic_server_release_accepted_stream_entry,
+    0
+  );
+
+  return peer;
+}
+
+static void quic_server_peer_state_destroy(quic_server_peer_state *peer)
+{
+  quic_stream_state *state;
+
+  if (peer == NULL) {
+    return;
+  }
+
+  if (peer->conn != NULL) {
+    ngtcp2_conn_del(peer->conn);
+    peer->conn = NULL;
+  }
+
+  if (peer->session != NULL) {
+    gnutls_deinit(peer->session);
+    peer->session = NULL;
+  }
+
+  if (peer->cred != NULL) {
+    gnutls_certificate_free_credentials(peer->cred);
+    peer->cred = NULL;
+  }
+
+  ZEND_HASH_FOREACH_PTR(&peer->streams, state) {
+    quic_stream_state_detach(state);
+    quic_stream_state_release(state);
+  } ZEND_HASH_FOREACH_END();
+  zend_hash_destroy(&peer->streams);
+  zend_llist_destroy(&peer->accepted_streams);
+
+  efree(peer);
+}
+
 static void quic_server_queue_accepted_stream_state(
-  quic_server_connection_object *intern,
+  quic_server_peer_state *peer,
   quic_stream_state *state
 )
 {
   quic_stream_state_addref(state);
-  zend_llist_prepend_element(&intern->accepted_streams, &state);
+  zend_llist_prepend_element(&peer->accepted_streams, &state);
 }
 
 static quic_stream_state *quic_server_pop_accepted_stream_state(
-  quic_server_connection_object *intern
+  quic_server_peer_state *peer
 )
 {
   quic_stream_state **state_ptr;
   quic_stream_state *state;
 
-  state_ptr = zend_llist_get_last(&intern->accepted_streams);
+  state_ptr = zend_llist_get_last(&peer->accepted_streams);
   if (state_ptr == NULL) {
     return NULL;
   }
 
   state = *state_ptr;
   quic_stream_state_addref(state);
-  zend_llist_remove_tail(&intern->accepted_streams);
+  zend_llist_remove_tail(&peer->accepted_streams);
 
   return state;
 }
 
 static quic_stream_state *quic_server_ensure_stream_state(
-  quic_server_connection_object *intern,
+  quic_server_peer_state *peer,
   int64_t stream_id,
   bool queue_if_new
 )
 {
   quic_stream_state *state;
 
-  state = quic_server_find_stream_state(intern, stream_id);
+  state = quic_server_find_stream_state(peer, stream_id);
   if (state != NULL) {
     return state;
   }
 
-  state = quic_stream_state_create(QUIC_STREAM_OWNER_SERVER, intern, stream_id);
-  if (!quic_server_register_stream_state(intern, state)) {
+  state = quic_stream_state_create(QUIC_STREAM_OWNER_SERVER, peer, stream_id);
+  if (!quic_server_register_stream_state(peer, state)) {
     quic_stream_state_release(state);
     return NULL;
   }
 
-  if (intern->conn != NULL) {
-    ngtcp2_conn_set_stream_user_data(intern->conn, stream_id, state);
+  if (peer->conn != NULL) {
+    ngtcp2_conn_set_stream_user_data(peer->conn, stream_id, state);
   }
 
   if (queue_if_new) {
-    quic_server_queue_accepted_stream_state(intern, state);
+    quic_server_queue_accepted_stream_state(peer, state);
   }
 
   quic_stream_state_release(state);
 
-  return quic_server_find_stream_state(intern, stream_id);
+  return quic_server_find_stream_state(peer, stream_id);
 }
 
 static uint64_t quic_server_timestamp(void)
@@ -227,8 +289,8 @@ static bool quic_server_fill_random(void *dest, size_t destlen)
 
 static ngtcp2_conn *quic_server_get_conn(ngtcp2_crypto_conn_ref *conn_ref)
 {
-  quic_server_connection_object *intern = conn_ref->user_data;
-  return intern->conn;
+  quic_server_peer_state *peer = conn_ref->user_data;
+  return peer->conn;
 }
 
 static void quic_server_rand_cb(uint8_t *dest, size_t destlen, const ngtcp2_rand_ctx *rand_ctx)
@@ -270,23 +332,23 @@ static bool quic_server_is_client_bidi_stream(int64_t stream_id)
 
 static int quic_server_handshake_completed_cb(ngtcp2_conn *conn, void *user_data)
 {
-  quic_server_connection_object *intern = user_data;
+  quic_server_peer_state *peer = user_data;
 
   (void) conn;
 
-  intern->handshake_complete = true;
+  peer->handshake_complete = true;
 
   return 0;
 }
 
 static int quic_server_stream_open_cb(ngtcp2_conn *conn, int64_t stream_id, void *user_data)
 {
-  quic_server_connection_object *intern = user_data;
+  quic_server_peer_state *peer = user_data;
 
   (void) conn;
 
   if (quic_server_is_client_bidi_stream(stream_id) &&
-      quic_server_ensure_stream_state(intern, stream_id, true) == NULL) {
+      quic_server_ensure_stream_state(peer, stream_id, true) == NULL) {
     return NGTCP2_ERR_CALLBACK_FAILURE;
   }
 
@@ -302,7 +364,7 @@ static int quic_server_stream_close_cb(
   void *stream_user_data
 )
 {
-  quic_server_connection_object *intern = user_data;
+  quic_server_peer_state *peer = user_data;
   quic_stream_state *state = stream_user_data;
 
   (void) conn;
@@ -310,7 +372,7 @@ static int quic_server_stream_close_cb(
   (void) app_error_code;
 
   if (state == NULL) {
-    state = quic_server_find_stream_state(intern, stream_id);
+    state = quic_server_find_stream_state(peer, stream_id);
   }
 
   if (state != NULL) {
@@ -331,14 +393,14 @@ static int quic_server_recv_stream_data_cb(
   void *stream_user_data
 )
 {
-  quic_server_connection_object *intern = user_data;
+  quic_server_peer_state *peer = user_data;
   quic_stream_state *state = stream_user_data;
 
   (void) conn;
   (void) offset;
 
   if (state == NULL && quic_server_is_client_bidi_stream(stream_id)) {
-    state = quic_server_ensure_stream_state(intern, stream_id, true);
+    state = quic_server_ensure_stream_state(peer, stream_id, true);
   }
 
   if (state == NULL) {
@@ -352,11 +414,11 @@ static int quic_server_recv_stream_data_cb(
   if (flags & NGTCP2_STREAM_DATA_FLAG_FIN) {
     quic_stream_state_mark_peer_fin(state);
 
-    if (intern->response != NULL && !state->fin_requested) {
+    if (peer->server->response != NULL && !state->fin_requested) {
       if (!quic_stream_state_append_write(
             state,
-            (const uint8_t *) ZSTR_VAL(intern->response),
-            ZSTR_LEN(intern->response)
+            (const uint8_t *) ZSTR_VAL(peer->server->response),
+            ZSTR_LEN(peer->server->response)
           )) {
         return NGTCP2_ERR_CALLBACK_FAILURE;
       }
@@ -689,18 +751,18 @@ static bool quic_server_send_packet(quic_server_connection_object *intern, const
   return true;
 }
 
-static bool quic_server_record_protocol_error(quic_server_connection_object *intern, int rv)
+static bool quic_server_record_protocol_error(quic_server_peer_state *peer, int rv)
 {
-  if (!intern->last_error.error_code) {
+  if (!peer->last_error.error_code) {
     if (rv == NGTCP2_ERR_CRYPTO) {
       ngtcp2_ccerr_set_tls_alert(
-        &intern->last_error,
-        ngtcp2_conn_get_tls_alert(intern->conn),
+        &peer->last_error,
+        ngtcp2_conn_get_tls_alert(peer->conn),
         NULL,
         0
       );
     } else {
-      ngtcp2_ccerr_set_liberr(&intern->last_error, rv, NULL, 0);
+      ngtcp2_ccerr_set_liberr(&peer->last_error, rv, NULL, 0);
     }
   }
 
@@ -716,44 +778,21 @@ static bool quic_server_record_protocol_error(quic_server_connection_object *int
 
 static void quic_server_reset_connection_state(quic_server_connection_object *intern)
 {
-  if (intern->conn != NULL) {
-    ngtcp2_conn_del(intern->conn);
-    intern->conn = NULL;
+  if (intern->peer != NULL) {
+    quic_server_peer_state_destroy(intern->peer);
+    intern->peer = NULL;
   }
-
-  if (intern->session != NULL) {
-    gnutls_deinit(intern->session);
-    intern->session = NULL;
-  }
-
-  if (intern->cred != NULL) {
-    gnutls_certificate_free_credentials(intern->cred);
-    intern->cred = NULL;
-  }
-
-  {
-    quic_stream_state *state;
-
-    ZEND_HASH_FOREACH_PTR(&intern->streams, state) {
-      quic_stream_state_detach(state);
-      quic_stream_state_release(state);
-    } ZEND_HASH_FOREACH_END();
-  }
-  zend_hash_clean(&intern->streams);
-  zend_llist_clean(&intern->accepted_streams);
-
-  intern->started = false;
-  intern->handshake_complete = false;
-  intern->peer_addrlen = 0;
-  ngtcp2_ccerr_default(&intern->last_error);
 }
 
-static bool quic_server_tls_init(quic_server_connection_object *intern)
+static bool quic_server_tls_init(
+  quic_server_connection_object *intern,
+  quic_server_peer_state *peer
+)
 {
   gnutls_datum_t alpn;
   int rv;
 
-  rv = gnutls_certificate_allocate_credentials(&intern->cred);
+  rv = gnutls_certificate_allocate_credentials(&peer->cred);
   if (rv != 0) {
     zend_throw_exception_ex(
       quic_tls_exception_ce,
@@ -765,7 +804,7 @@ static bool quic_server_tls_init(quic_server_connection_object *intern)
   }
 
   rv = gnutls_certificate_set_x509_key_file(
-    intern->cred,
+    peer->cred,
     ZSTR_VAL(intern->certfile),
     ZSTR_VAL(intern->keyfile),
     GNUTLS_X509_FMT_PEM
@@ -781,7 +820,7 @@ static bool quic_server_tls_init(quic_server_connection_object *intern)
   }
 
   rv = gnutls_init(
-    &intern->session,
+    &peer->session,
     GNUTLS_SERVER | GNUTLS_ENABLE_EARLY_DATA |
       GNUTLS_NO_AUTO_SEND_TICKET | GNUTLS_NO_END_OF_EARLY_DATA
   );
@@ -795,7 +834,7 @@ static bool quic_server_tls_init(quic_server_connection_object *intern)
     return false;
   }
 
-  rv = gnutls_priority_set_direct(intern->session, quic_server_tls_priority, NULL);
+  rv = gnutls_priority_set_direct(peer->session, quic_server_tls_priority, NULL);
   if (rv != 0) {
     zend_throw_exception_ex(
       quic_tls_exception_ce,
@@ -806,7 +845,7 @@ static bool quic_server_tls_init(quic_server_connection_object *intern)
     return false;
   }
 
-  rv = ngtcp2_crypto_gnutls_configure_server_session(intern->session);
+  rv = ngtcp2_crypto_gnutls_configure_server_session(peer->session);
   if (rv != 0) {
     zend_throw_exception_ex(
       quic_tls_exception_ce,
@@ -816,7 +855,7 @@ static bool quic_server_tls_init(quic_server_connection_object *intern)
     return false;
   }
 
-  rv = gnutls_credentials_set(intern->session, GNUTLS_CRD_CERTIFICATE, intern->cred);
+  rv = gnutls_credentials_set(peer->session, GNUTLS_CRD_CERTIFICATE, peer->cred);
   if (rv != 0) {
     zend_throw_exception_ex(
       quic_tls_exception_ce,
@@ -830,7 +869,7 @@ static bool quic_server_tls_init(quic_server_connection_object *intern)
   alpn.data = (unsigned char *) ZSTR_VAL(intern->alpn);
   alpn.size = (unsigned int) ZSTR_LEN(intern->alpn);
   rv = gnutls_alpn_set_protocols(
-    intern->session,
+    peer->session,
     &alpn,
     1,
     GNUTLS_ALPN_MANDATORY | GNUTLS_ALPN_SERVER_PRECEDENCE
@@ -845,16 +884,17 @@ static bool quic_server_tls_init(quic_server_connection_object *intern)
     return false;
   }
 
-  intern->conn_ref.get_conn = quic_server_get_conn;
-  intern->conn_ref.user_data = intern;
-  gnutls_session_set_ptr(intern->session, &intern->conn_ref);
-  gnutls_handshake_set_timeout(intern->session, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
+  peer->conn_ref.get_conn = quic_server_get_conn;
+  peer->conn_ref.user_data = peer;
+  gnutls_session_set_ptr(peer->session, &peer->conn_ref);
+  gnutls_handshake_set_timeout(peer->session, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
 
   return true;
 }
 
 static bool quic_server_quic_init(
   quic_server_connection_object *intern,
+  quic_server_peer_state *peer,
   const ngtcp2_cid *client_dcid,
   const ngtcp2_cid *client_scid,
   uint32_t version
@@ -887,8 +927,8 @@ static bool quic_server_quic_init(
       .addrlen = intern->local_addrlen,
     },
     .remote = {
-      .addr = (struct sockaddr *) &intern->peer_addr,
-      .addrlen = intern->peer_addrlen,
+      .addr = (struct sockaddr *) &peer->peer_addr,
+      .addrlen = peer->peer_addrlen,
     },
   };
   ngtcp2_cid scid;
@@ -923,7 +963,7 @@ static bool quic_server_quic_init(
   }
 
   rv = ngtcp2_conn_server_new(
-    &intern->conn,
+    &peer->conn,
     client_scid,
     &scid,
     &path,
@@ -932,7 +972,7 @@ static bool quic_server_quic_init(
     &settings,
     &params,
     NULL,
-    intern
+    peer
   );
   if (rv != 0) {
     zend_throw_exception_ex(
@@ -944,19 +984,20 @@ static bool quic_server_quic_init(
     return false;
   }
 
-  ngtcp2_conn_set_tls_native_handle(intern->conn, intern->session);
+  ngtcp2_conn_set_tls_native_handle(peer->conn, peer->session);
 
   return true;
 }
 
 static bool quic_server_flush_packets(quic_server_connection_object *intern)
 {
+  quic_server_peer_state *peer = intern->peer;
   ngtcp2_path_storage path_storage;
   ngtcp2_pkt_info packet_info;
   uint8_t buffer[1452];
   uint64_t now;
 
-  if (intern->conn == NULL) {
+  if (peer == NULL || peer->conn == NULL) {
     return true;
   }
 
@@ -979,7 +1020,7 @@ static bool quic_server_flush_packets(quic_server_connection_object *intern)
     uint32_t flags = NGTCP2_WRITE_STREAM_FLAG_MORE;
     bool fin_attempted = false;
 
-    state = quic_server_get_next_writable_stream(intern);
+    state = quic_server_get_next_writable_stream(peer);
     if (state != NULL) {
       stream_id = state->stream_id;
 
@@ -995,7 +1036,7 @@ static bool quic_server_flush_packets(quic_server_connection_object *intern)
     }
 
     nwrite = ngtcp2_conn_writev_stream(
-      intern->conn,
+      peer->conn,
       &path_storage.path,
       &packet_info,
       buffer,
@@ -1020,7 +1061,7 @@ static bool quic_server_flush_packets(quic_server_connection_object *intern)
         continue;
       }
 
-      ngtcp2_ccerr_set_liberr(&intern->last_error, (int) nwrite, NULL, 0);
+      ngtcp2_ccerr_set_liberr(&peer->last_error, (int) nwrite, NULL, 0);
       zend_throw_exception_ex(
         quic_protocol_exception_ce,
         (int) nwrite,
@@ -1051,8 +1092,13 @@ static bool quic_server_flush_packets(quic_server_connection_object *intern)
 
 static bool quic_server_handle_connected_readable(quic_server_connection_object *intern)
 {
+  quic_server_peer_state *peer = intern->peer;
   uint8_t buffer[65536];
   ngtcp2_pkt_info packet_info = {0};
+
+  if (peer == NULL) {
+    return true;
+  }
 
   for (;;) {
     ngtcp2_path path = {
@@ -1061,8 +1107,8 @@ static bool quic_server_handle_connected_readable(quic_server_connection_object 
         .addrlen = intern->local_addrlen,
       },
       .remote = {
-        .addr = (struct sockaddr *) &intern->peer_addr,
-        .addrlen = intern->peer_addrlen,
+        .addr = (struct sockaddr *) &peer->peer_addr,
+        .addrlen = peer->peer_addrlen,
       },
     };
     ssize_t nread;
@@ -1093,15 +1139,16 @@ static bool quic_server_handle_connected_readable(quic_server_connection_object 
       return false;
     }
 
-    rv = ngtcp2_conn_read_pkt(intern->conn, &path, &packet_info, buffer, (size_t) nread, now);
+    rv = ngtcp2_conn_read_pkt(peer->conn, &path, &packet_info, buffer, (size_t) nread, now);
     if (rv != 0) {
-      return quic_server_record_protocol_error(intern, rv);
+      return quic_server_record_protocol_error(peer, rv);
     }
   }
 }
 
 static bool quic_server_try_accept_initial(quic_server_connection_object *intern, bool *accepted)
 {
+  quic_server_peer_state *peer;
   uint8_t buffer[2048];
 
   *accepted = false;
@@ -1172,8 +1219,9 @@ static bool quic_server_try_accept_initial(quic_server_connection_object *intern
       return false;
     }
 
-    memcpy(&intern->peer_addr, &peer_addr, peer_addrlen);
-    intern->peer_addrlen = peer_addrlen;
+    peer = quic_server_peer_state_create(intern);
+    memcpy(&peer->peer_addr, &peer_addr, peer_addrlen);
+    peer->peer_addrlen = peer_addrlen;
 
     intern->local_addrlen = sizeof(intern->local_addr);
     if (getsockname(intern->fd, (struct sockaddr *) &intern->local_addr, &intern->local_addrlen) < 0) {
@@ -1186,18 +1234,20 @@ static bool quic_server_try_accept_initial(quic_server_connection_object *intern
       return false;
     }
 
-    if (!quic_server_tls_init(intern)) {
+    if (!quic_server_tls_init(intern, peer)) {
+      quic_server_peer_state_destroy(peer);
       return false;
     }
 
-    if (!quic_server_quic_init(intern, &client_dcid, &client_scid, version)) {
+    if (!quic_server_quic_init(intern, peer, &client_dcid, &client_scid, version)) {
+      quic_server_peer_state_destroy(peer);
       return false;
     }
 
     path.local.addr = (struct sockaddr *) &intern->local_addr;
     path.local.addrlen = intern->local_addrlen;
-    path.remote.addr = (struct sockaddr *) &intern->peer_addr;
-    path.remote.addrlen = intern->peer_addrlen;
+    path.remote.addr = (struct sockaddr *) &peer->peer_addr;
+    path.remote.addrlen = peer->peer_addrlen;
     path.user_data = NULL;
 
     now = quic_server_timestamp();
@@ -1205,12 +1255,15 @@ static bool quic_server_try_accept_initial(quic_server_connection_object *intern
       return false;
     }
 
-    rv = ngtcp2_conn_read_pkt(intern->conn, &path, &packet_info, buffer, (size_t) nread, now);
+    rv = ngtcp2_conn_read_pkt(peer->conn, &path, &packet_info, buffer, (size_t) nread, now);
     if (rv != 0) {
-      return quic_server_record_protocol_error(intern, rv);
+      bool ok = quic_server_record_protocol_error(peer, rv);
+      quic_server_peer_state_destroy(peer);
+      return ok;
     }
 
-    intern->started = true;
+    peer->started = true;
+    intern->peer = peer;
     *accepted = true;
     return true;
   }
@@ -1225,7 +1278,7 @@ static bool quic_server_process_readable(quic_server_connection_object *intern)
     return false;
   }
 
-  if (intern->conn == NULL) {
+  if (intern->peer == NULL || intern->peer->conn == NULL) {
     if (!quic_server_try_accept_initial(intern, &accepted)) {
       return false;
     }
@@ -1240,10 +1293,11 @@ static bool quic_server_process_readable(quic_server_connection_object *intern)
 
 static bool quic_server_process_expiry(quic_server_connection_object *intern)
 {
+  quic_server_peer_state *peer = intern->peer;
   uint64_t now;
   int rv;
 
-  if (intern->conn == NULL) {
+  if (peer == NULL || peer->conn == NULL) {
     return true;
   }
 
@@ -1252,9 +1306,9 @@ static bool quic_server_process_expiry(quic_server_connection_object *intern)
     return false;
   }
 
-  rv = ngtcp2_conn_handle_expiry(intern->conn, now);
+  rv = ngtcp2_conn_handle_expiry(peer->conn, now);
   if (rv != 0) {
-    return quic_server_record_protocol_error(intern, rv);
+    return quic_server_record_protocol_error(peer, rv);
   }
 
   return true;
@@ -1265,18 +1319,19 @@ static bool quic_server_write_connection_close_packet(
   const ngtcp2_ccerr *ccerr
 )
 {
+  quic_server_peer_state *peer = intern->peer;
   ngtcp2_path_storage path_storage;
   ngtcp2_pkt_info packet_info;
   uint8_t buffer[NGTCP2_MAX_UDP_PAYLOAD_SIZE];
   ngtcp2_ssize nwrite;
   uint64_t now;
 
-  if (intern->conn == NULL) {
+  if (peer == NULL || peer->conn == NULL) {
     return true;
   }
 
-  if (ngtcp2_conn_in_closing_period(intern->conn) ||
-      ngtcp2_conn_in_draining_period(intern->conn)) {
+  if (ngtcp2_conn_in_closing_period(peer->conn) ||
+      ngtcp2_conn_in_draining_period(peer->conn)) {
     return true;
   }
 
@@ -1288,7 +1343,7 @@ static bool quic_server_write_connection_close_packet(
   ngtcp2_path_storage_zero(&path_storage);
 
   nwrite = ngtcp2_conn_write_connection_close(
-    intern->conn,
+    peer->conn,
     &path_storage.path,
     &packet_info,
     buffer,
@@ -1354,8 +1409,6 @@ static void quic_server_connection_free_object(zend_object *object)
     intern->response = NULL;
   }
 
-  zend_hash_destroy(&intern->streams);
-  zend_llist_destroy(&intern->accepted_streams);
   zend_object_std_dtor(&intern->std);
 }
 
@@ -1383,21 +1436,8 @@ static zend_object *quic_server_connection_create_object(zend_class_entry *class
     sizeof(QUIC_SERVER_DEFAULT_RESPONSE) - 1,
     0
   );
-  intern->started = false;
-  intern->handshake_complete = false;
   intern->local_addrlen = 0;
-  intern->peer_addrlen = 0;
-  intern->cred = NULL;
-  intern->session = NULL;
-  intern->conn = NULL;
-  ngtcp2_ccerr_default(&intern->last_error);
-  zend_hash_init(&intern->streams, 8, NULL, NULL, 0);
-  zend_llist_init(
-    &intern->accepted_streams,
-    sizeof(quic_stream_state *),
-    quic_server_release_accepted_stream_entry,
-    0
-  );
+  intern->peer = NULL;
 
   zend_object_std_init(&intern->std, class_type);
   object_properties_init(&intern->std, class_type);
@@ -1562,15 +1602,16 @@ PHP_METHOD(Quic_ServerConnection, flush)
 PHP_METHOD(Quic_ServerConnection, getTimeout)
 {
   quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+  quic_server_peer_state *peer = intern->peer;
   ngtcp2_tstamp expiry;
   uint64_t now;
   uint64_t delta_ms;
 
-  if (intern->conn == NULL) {
+  if (peer == NULL || peer->conn == NULL) {
     RETURN_NULL();
   }
 
-  expiry = ngtcp2_conn_get_expiry(intern->conn);
+  expiry = ngtcp2_conn_get_expiry(peer->conn);
 
   now = quic_server_timestamp();
   if (EG(exception) != NULL) {
@@ -1590,7 +1631,7 @@ PHP_METHOD(Quic_ServerConnection, isHandshakeComplete)
 {
   quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
 
-  RETURN_BOOL(intern->handshake_complete);
+  RETURN_BOOL(intern->peer != NULL && intern->peer->handshake_complete);
 }
 
 PHP_METHOD(Quic_ServerConnection, popAcceptedStream)
@@ -1598,7 +1639,11 @@ PHP_METHOD(Quic_ServerConnection, popAcceptedStream)
   quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
   quic_stream_state *state;
 
-  state = quic_server_pop_accepted_stream_state(intern);
+  if (intern->peer == NULL) {
+    RETURN_NULL();
+  }
+
+  state = quic_server_pop_accepted_stream_state(intern->peer);
   if (state == NULL) {
     RETURN_NULL();
   }
@@ -1609,6 +1654,7 @@ PHP_METHOD(Quic_ServerConnection, popAcceptedStream)
 PHP_METHOD(Quic_ServerConnection, close)
 {
   quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+  quic_server_peer_state *peer = intern->peer;
   zval *error_code = NULL;
   zend_string *reason = NULL;
   ngtcp2_ccerr ccerr;
@@ -1643,7 +1689,7 @@ PHP_METHOD(Quic_ServerConnection, close)
     );
   }
 
-  if (intern->started && intern->conn != NULL) {
+  if (peer != NULL && peer->started && peer->conn != NULL) {
     ok = quic_server_write_connection_close_packet(intern, &ccerr);
   }
 
@@ -1665,8 +1711,8 @@ PHP_METHOD(Quic_ServerConnection, getPeerAddress)
 
   quic_server_address_to_array(
     return_value,
-    (const struct sockaddr *) &intern->peer_addr,
-    intern->peer_addrlen
+    intern->peer != NULL ? (const struct sockaddr *) &intern->peer->peer_addr : NULL,
+    intern->peer != NULL ? intern->peer->peer_addrlen : 0
   );
 }
 
