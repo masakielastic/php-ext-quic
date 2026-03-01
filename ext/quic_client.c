@@ -930,7 +930,7 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
 
     if (nwrite < 0) {
       if (nwrite == NGTCP2_ERR_WRITE_MORE) {
-        if (state != NULL) {
+        if (state != NULL && data_written >= 0) {
           quic_stream_state_mark_write_progress(
             state,
             (size_t) data_written,
@@ -955,7 +955,7 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
       return true;
     }
 
-    if (state != NULL) {
+    if (state != NULL && data_written >= 0) {
       quic_stream_state_mark_write_progress(
         state,
         (size_t) data_written,

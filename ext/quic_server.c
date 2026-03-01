@@ -59,6 +59,7 @@ typedef struct _quic_server_peer_state {
   HashTable streams;
   bool started;
   bool handshake_complete;
+  bool closing_requested;
   bool detached;
   uint32_t refcount;
 } quic_server_peer_state;
@@ -286,6 +287,7 @@ static quic_server_peer_state *quic_server_peer_state_create(quic_server_connect
   peer->peer_addrlen = 0;
   peer->started = false;
   peer->handshake_complete = false;
+  peer->closing_requested = false;
   peer->detached = false;
   peer->refcount = 1;
   ngtcp2_ccerr_default(&peer->last_error);
@@ -333,6 +335,7 @@ static void quic_server_peer_state_detach(quic_server_peer_state *peer)
   peer->server = NULL;
   peer->started = false;
   peer->handshake_complete = false;
+  peer->closing_requested = false;
 }
 
 static void quic_server_peer_state_release(quic_server_peer_state *peer)
@@ -984,6 +987,23 @@ static bool quic_server_record_protocol_error(quic_server_peer_state *peer, int 
   return false;
 }
 
+static bool quic_server_is_expected_close_error(quic_server_peer_state *peer, int rv)
+{
+  if (peer == NULL || !peer->closing_requested) {
+    return false;
+  }
+
+  if (
+    rv != NGTCP2_ERR_CLOSING &&
+    rv != NGTCP2_ERR_DRAINING &&
+    rv != NGTCP2_ERR_DROP_CONN
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 static void quic_server_reset_connection_state(quic_server_connection_object *intern)
 {
   quic_server_peer_state *peer;
@@ -1215,7 +1235,7 @@ static bool quic_server_flush_peer_packets(
   uint8_t buffer[1452];
   uint64_t now;
 
-  if (peer == NULL || peer->conn == NULL) {
+  if (peer == NULL || peer->conn == NULL || peer->closing_requested) {
     return true;
   }
 
@@ -1268,7 +1288,7 @@ static bool quic_server_flush_peer_packets(
     );
     if (nwrite < 0) {
       if (nwrite == NGTCP2_ERR_WRITE_MORE) {
-        if (state != NULL) {
+        if (state != NULL && data_written >= 0) {
           quic_stream_state_mark_write_progress(
             state,
             (size_t) data_written,
@@ -1293,7 +1313,7 @@ static bool quic_server_flush_peer_packets(
       return true;
     }
 
-    if (state != NULL) {
+    if (state != NULL && data_written >= 0) {
       quic_stream_state_mark_write_progress(
         state,
         (size_t) data_written,
@@ -1349,6 +1369,10 @@ static bool quic_server_handle_peer_packet(
 
   rv = ngtcp2_conn_read_pkt(peer->conn, &path, &packet_info, buffer, buffer_len, now);
   if (rv != 0) {
+    if (quic_server_is_expected_close_error(peer, rv)) {
+      quic_server_unregister_peer(intern, peer);
+      return true;
+    }
     return quic_server_record_protocol_error(peer, rv);
   }
 
@@ -1497,6 +1521,7 @@ static bool quic_server_process_readable(quic_server_connection_object *intern)
 static bool quic_server_process_expiry(quic_server_connection_object *intern)
 {
   quic_server_peer_state *peer;
+  zend_llist expired_peers;
   uint64_t now;
 
   if (zend_hash_num_elements(&intern->peers) == 0) {
@@ -1508,8 +1533,11 @@ static bool quic_server_process_expiry(quic_server_connection_object *intern)
     return false;
   }
 
+  zend_llist_init(&expired_peers, sizeof(quic_server_peer_state *), NULL, 0);
+
   ZEND_HASH_FOREACH_PTR(&intern->peers, peer) {
     int rv;
+    ngtcp2_tstamp expiry;
 
     if (peer == NULL || peer->conn == NULL) {
       continue;
@@ -1517,10 +1545,41 @@ static bool quic_server_process_expiry(quic_server_connection_object *intern)
 
     rv = ngtcp2_conn_handle_expiry(peer->conn, now);
     if (rv != 0) {
+      if (quic_server_is_expected_close_error(peer, rv)) {
+        quic_server_peer_state_addref(peer);
+        zend_llist_add_element(&expired_peers, &peer);
+        continue;
+      }
+
+      zend_llist_destroy(&expired_peers);
       intern->active_peer = peer;
       return quic_server_record_protocol_error(peer, rv);
     }
+
+    expiry = ngtcp2_conn_get_expiry(peer->conn);
+    if (
+      peer->closing_requested &&
+      expiry <= now &&
+      (ngtcp2_conn_in_closing_period(peer->conn) || ngtcp2_conn_in_draining_period(peer->conn))
+    ) {
+      quic_server_peer_state_addref(peer);
+      zend_llist_add_element(&expired_peers, &peer);
+    }
   } ZEND_HASH_FOREACH_END();
+
+  while (zend_llist_count(&expired_peers) > 0) {
+    quic_server_peer_state **peer_ptr = zend_llist_get_last(&expired_peers);
+
+    if (peer_ptr == NULL) {
+      break;
+    }
+
+    quic_server_unregister_peer(intern, *peer_ptr);
+    quic_server_peer_state_release(*peer_ptr);
+    zend_llist_remove_tail(&expired_peers);
+  }
+
+  zend_llist_destroy(&expired_peers);
 
   return true;
 }
@@ -2128,10 +2187,11 @@ PHP_METHOD(Quic_ServerPeer, close)
   server = intern->peer->server;
   if (server != NULL && intern->peer->started && intern->peer->conn != NULL) {
     server->active_peer = intern->peer;
+    intern->peer->closing_requested = true;
     if (!quic_server_write_connection_close_packet(server, intern->peer, &ccerr)) {
+      intern->peer->closing_requested = false;
       RETURN_THROWS();
     }
-    quic_server_unregister_peer(server, intern->peer);
   } else {
     quic_server_peer_state_detach(intern->peer);
   }
