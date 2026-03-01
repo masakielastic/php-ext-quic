@@ -21,6 +21,11 @@ The extension must not embed its own event loop. Userland should drive I/O by
 watching a PHP stream and calling extension methods when readable or when a
 timer expires.
 
+Related guides:
+
+- `docs/EVENT_LOOP_USAGE.md`
+- `docs/EXAMPLES.md`
+
 ## Non-goals for the first milestone
 
 - HTTP/3

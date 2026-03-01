@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "php-ext",
   "license": "MIT",
+  "support": {
+    "docs": "docs/EXAMPLES.md"
+  },
   "require": {
     "php": ">=8.1"
   },
