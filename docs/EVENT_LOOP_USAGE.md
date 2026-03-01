@@ -178,6 +178,7 @@ The repository contains runnable examples:
 - `examples/server_loop.php`
 - `examples/server_multi_peer_loop.php`
 - `examples/run_multi_peer_demo.php`
+- `docs/EXAMPLES.md` for a quick usage index
 
 `examples/client_ping.php` treats `ERR_CLOSING` and `ERR_DRAINING` as expected
 terminal states after the request stream has been opened, so the demo scripts
