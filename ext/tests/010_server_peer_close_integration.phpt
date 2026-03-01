@@ -94,3 +94,5 @@ string(7) "ping-2
 string(24) "server response: ping-2
 "
 bool(true)
+bool(true)
+bool(true)

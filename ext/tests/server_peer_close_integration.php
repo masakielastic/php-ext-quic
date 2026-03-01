@@ -202,12 +202,15 @@ $peer2 = waitForAcceptedPeer($server, $serverStream, $client2, $client2Stream);
 $peer2Address = $peer2->getPeerAddress();
 $result = exchangeRequest($server, $peer2, $serverStream, $client2, $client2Stream, "ping-2\n");
 $client2Local = $client2->getLocalAddress();
+$serverPeerAddress = $server->getPeerAddress();
 
 var_dump($peer1Address['port'] === $client1Local['port']);
 var_dump($peer2->isHandshakeComplete());
 var_dump($result['peer_handshake']);
 var_dump($result['request']);
 var_dump($result['response']);
+var_dump($server->isHandshakeComplete());
+var_dump($serverPeerAddress['port'] === $client2Local['port']);
 var_dump($peer2Address['port'] === $client2Local['port']);
 
 fclose($client2Stream);
