@@ -149,6 +149,9 @@ Notes:
 - These compatibility helpers stay in scope for milestone 1 so existing
   single-peer examples remain small, but they are candidates for reduction once
   peer-oriented APIs fully cover server workflows.
+- `ServerConnection::popAcceptedStream()` and `ServerPeer::popAcceptedStream()`
+  should not be mixed in the same server flow. They expose the same accepted
+  stream states through different queues for compatibility purposes.
 - New code that tracks more than one peer should prefer `Quic\ServerPeer` for
   peer-specific state.
 

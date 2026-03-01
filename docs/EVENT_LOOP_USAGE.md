@@ -44,6 +44,11 @@ If you still use `ServerConnection::popAcceptedStream()`, treat it as the same
 kind of compatibility path: acceptable for small single-peer scripts, but not
 the preferred shape once you keep peer objects around.
 
+Do not mix `ServerConnection::popAcceptedStream()` and
+`ServerPeer::popAcceptedStream()` in the same control flow. They observe the
+same accepted stream states through different queues, so mixing them makes
+ownership and ordering harder to reason about.
+
 ## Client loop shape
 
 ```php
