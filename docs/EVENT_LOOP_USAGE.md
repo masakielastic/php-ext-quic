@@ -178,3 +178,7 @@ The repository contains runnable examples:
 - `examples/server_loop.php`
 - `examples/server_multi_peer_loop.php`
 - `examples/run_multi_peer_demo.php`
+
+`examples/client_ping.php` treats `ERR_CLOSING` and `ERR_DRAINING` as expected
+terminal states after the request stream has been opened, so the demo scripts
+can exit cleanly when the server closes the peer immediately after replying.
