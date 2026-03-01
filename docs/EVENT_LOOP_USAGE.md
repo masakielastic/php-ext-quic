@@ -167,6 +167,16 @@ while (true) {
 }
 ```
 
+## Fiber server shape
+
+The same split also works on the server side. The inner Fiber can own
+`popAcceptedPeer()`, `popAcceptedStream()`, `flush()`, `handleReadable()`, and
+`handleExpiry()`, while the outer loop only waits on `getPollStream()` and
+resumes the Fiber with timeout or readability.
+
+See `examples/server_fiber_loop.php` for a minimal runnable version of this
+pattern.
+
 ## Reference scripts
 
 The repository contains runnable examples:
@@ -174,6 +184,7 @@ The repository contains runnable examples:
 - `examples/client_ping.php`
 - `examples/client_fiber_ping.php`
 - `examples/server_loop.php`
+- `examples/server_fiber_loop.php`
 - `examples/server_multi_peer_loop.php`
 - `examples/run_multi_peer_demo.php`
 - `docs/EXAMPLES.md` for a quick usage index

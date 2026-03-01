@@ -66,6 +66,25 @@ php -d extension=/home/masakielastic/php-ext-quic/ext/modules/quic.so \
   18443 /tmp/nghttp3-localhost.crt /tmp/nghttp3-localhost.key
 ```
 
+## Fiber server
+
+`examples/server_fiber_loop.php`
+
+Purpose:
+
+- accept one peer
+- drive QUIC state from inside a Fiber
+- suspend on poll-stream readiness or timeout
+- write one response, close the peer, and exit
+
+Example:
+
+```bash
+php -d extension=/home/masakielastic/php-ext-quic/ext/modules/quic.so \
+  /home/masakielastic/php-ext-quic/examples/server_fiber_loop.php \
+  18443 /tmp/nghttp3-localhost.crt /tmp/nghttp3-localhost.key
+```
+
 ## Multi-peer server
 
 `examples/server_multi_peer_loop.php`
