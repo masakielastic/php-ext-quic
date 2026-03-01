@@ -233,7 +233,7 @@ while (true) {
 Test certificates can be created with:
 
 ```bash
-./ext/tests/prepare_test_certs.sh
+sh ./ext/tests/prepare_test_certs.sh
 ```
 
 ## Tests
@@ -254,6 +254,12 @@ env QUIC_RUN_INTEGRATION_TESTS=1 make test TESTS='tests/006_client_stream_integr
 
 Some integration PHPTs skip in environments where child PHP processes cannot
 bind UDP sockets.
+
+CI-style local run:
+
+```bash
+sh ./ext/tests/run_ci.sh
+```
 
 ## Documentation
 

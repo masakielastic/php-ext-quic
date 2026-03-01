@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libngtcp2-dev \
+            libngtcp2-crypto-gnutls-dev \
+            libgnutls28-dev \
+            openssl
+
+      - name: Run extension CI script
+        run: sh ext/tests/run_ci.sh
