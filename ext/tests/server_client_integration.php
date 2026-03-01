@@ -14,6 +14,7 @@ $serverStream = $server->getStream();
 $clientStream = $client->getStream();
 $client->startHandshake();
 
+$peer = null;
 $opened = false;
 $accepted = false;
 $serverRequest = '';
@@ -24,8 +25,12 @@ while (microtime(true) < $deadline) {
     $client->flush();
     $server->flush();
 
+    if (!$peer instanceof Quic\ServerPeer) {
+        $peer = $server->popAcceptedPeer();
+    }
+
     if (!$accepted) {
-        $serverSideStream = $server->popAcceptedStream();
+        $serverSideStream = $peer?->popAcceptedStream();
         if ($serverSideStream instanceof Quic\Stream) {
             $accepted = true;
         }

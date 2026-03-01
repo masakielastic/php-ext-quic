@@ -144,6 +144,8 @@ Notes:
 - `isHandshakeComplete()` and `getPeerAddress()` on `ServerConnection` are
   compatibility helpers for simple flows and refer to the most recently
   accepted live peer.
+- `popAcceptedStream()` on `ServerConnection` is also a compatibility helper.
+  New code should prefer `ServerPeer::popAcceptedStream()`.
 - New code that tracks more than one peer should prefer `Quic\ServerPeer` for
   peer-specific state.
 
@@ -368,7 +370,7 @@ Deliverable:
 - implement `accept()` for first Initial packet
 - implement GnuTLS server session and certificate loading
 - wire server callbacks and accepted-stream queue
-- expose `popAcceptedStream()`
+- expose `popAcceptedPeer()` and `ServerPeer::popAcceptedStream()`
 
 Deliverable:
 
