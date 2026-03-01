@@ -62,6 +62,7 @@ void quic_stream_state_mark_write_progress(
 );
 void quic_stream_state_mark_read_stopped(quic_stream_state *state);
 void quic_stream_state_mark_write_reset(quic_stream_state *state);
+void quic_stream_state_mark_write_blocked(quic_stream_state *state);
 void quic_stream_state_mark_peer_fin(quic_stream_state *state);
 void quic_stream_state_mark_peer_reset(
   quic_stream_state *state,

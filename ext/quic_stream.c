@@ -174,6 +174,15 @@ void quic_stream_state_mark_write_reset(quic_stream_state *state)
   state->fin_sent = true;
 }
 
+void quic_stream_state_mark_write_blocked(quic_stream_state *state)
+{
+  state->write_reset = true;
+  state->write_buffer_len = 0;
+  state->write_buffer_off = 0;
+  state->fin_requested = true;
+  state->fin_sent = true;
+}
+
 void quic_stream_state_mark_peer_fin(quic_stream_state *state)
 {
   state->peer_fin_received = true;
@@ -323,6 +332,11 @@ PHP_METHOD(Quic_Stream, write)
     RETURN_THROWS();
   }
 
+  if (intern->state->write_reset) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Stream write side is closed");
+    RETURN_THROWS();
+  }
+
   if (intern->state->fin_requested) {
     zend_throw_exception_ex(quic_exception_ce, 0, "FIN has already been requested for this stream");
     RETURN_THROWS();
@@ -373,6 +387,7 @@ PHP_METHOD(Quic_Stream, isWritable)
   RETURN_BOOL(
     !intern->state->closed &&
     intern->state->owner != NULL &&
+    !intern->state->write_reset &&
     !intern->state->fin_requested
   );
 }

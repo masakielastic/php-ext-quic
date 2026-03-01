@@ -1421,6 +1421,10 @@ static bool quic_server_flush_peer_packets(
         continue;
       }
 
+      if (state != NULL && nwrite == NGTCP2_ERR_STREAM_SHUT_WR) {
+        quic_stream_state_mark_write_blocked(state);
+      }
+
       ngtcp2_ccerr_set_liberr(&peer->last_error, (int) nwrite, NULL, 0);
       zend_throw_exception_ex(
         quic_protocol_exception_ce,

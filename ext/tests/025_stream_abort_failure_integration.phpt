@@ -55,6 +55,8 @@ require __DIR__ . '/stream_abort_failure_integration.php';
 bool(true)
 int(55)
 bool(true)
+bool(false)
+bool(true)
 bool(true)
 bool(true)
 bool(true)

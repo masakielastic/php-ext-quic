@@ -970,6 +970,10 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
         continue;
       }
 
+      if (state != NULL && nwrite == NGTCP2_ERR_STREAM_SHUT_WR) {
+        quic_stream_state_mark_write_blocked(state);
+      }
+
       ngtcp2_ccerr_set_liberr(&intern->last_error, (int) nwrite, NULL, 0);
       zend_throw_exception_ex(
         quic_protocol_exception_ce,

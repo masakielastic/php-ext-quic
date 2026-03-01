@@ -20,6 +20,7 @@ $peer = null;
 $clientAbortStream = null;
 $serverAbortStream = null;
 $flushFailure = null;
+$writeFailure = null;
 $deadline = microtime(true) + 5.0;
 
 $client->startHandshake();
@@ -96,6 +97,12 @@ if ($flushFailure === null) {
     }
 }
 
+try {
+    $clientAbortStream->write("after-flush\n");
+} catch (Throwable $e) {
+    $writeFailure = $e;
+}
+
 var_dump($clientAbortStream->isPeerReset());
 var_dump($clientAbortStream->getPeerResetErrorCode());
 var_dump($clientAbortStream->isFinished());
@@ -104,6 +111,11 @@ var_dump($flushFailure instanceof Quic\ProtocolException);
 var_dump(
     $flushFailure instanceof Quic\ProtocolException &&
     str_contains($flushFailure->getMessage(), 'ERR_STREAM_SHUT_WR')
+);
+var_dump($writeFailure instanceof Quic\Exception);
+var_dump(
+    $writeFailure instanceof Quic\Exception &&
+    $writeFailure->getMessage() === 'Stream write side is closed'
 );
 
 fclose($serverStream);
