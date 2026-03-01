@@ -57,6 +57,9 @@ The extension should expose:
 - non-blocking methods to consume inbound packets, flush outbound packets, and
   process ngtcp2 expiry
 
+The UDP stream must be treated as a readiness handle only. Userland should not
+read or write packets directly through that stream.
+
 This allows integration with:
 
 - raw `stream_select()`
@@ -168,7 +171,8 @@ Recommended loop sequence for both client and server:
 
 1. Build connection object.
 2. Obtain UDP stream via `getStream()`.
-3. Put the stream in non-blocking mode from PHP if needed.
+3. Treat that stream as monitoring-only and do not perform direct socket I/O on
+   it from PHP.
 4. Call `startHandshake()` for clients or `accept()` for servers.
 5. In the event loop:
    - when stream is readable, call `handleReadable()`
