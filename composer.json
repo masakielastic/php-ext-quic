@@ -1,0 +1,26 @@
+{
+  "name": "masakielastic/quic",
+  "description": "Minimal QUIC client/server PHP extension powered by ngtcp2 and GnuTLS",
+  "version": "0.1.0",
+  "type": "php-ext",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.1"
+  },
+  "keywords": [
+    "php-ext",
+    "quic",
+    "ngtcp2",
+    "gnutls"
+  ],
+  "php-ext": {
+    "extension-name": "quic",
+    "build-path": "ext"
+  },
+  "extra": {
+    "pie": {
+      "extension-name": "quic",
+      "build-path": "ext"
+    }
+  }
+}
