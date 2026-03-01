@@ -24,3 +24,4 @@ php -d "extension=$EXTENSION" "$SCRIPT_DIR/server_stream_queue_order_integration
 php -d "extension=$EXTENSION" "$SCRIPT_DIR/client_tls_verify_integration.php"
 php -d "extension=$EXTENSION" "$SCRIPT_DIR/tls_failure_integration.php"
 php -d "extension=$EXTENSION" "$SCRIPT_DIR/stream_reset_stop_integration.php"
+php -d "extension=$EXTENSION" "$SCRIPT_DIR/close_failure_integration.php"
