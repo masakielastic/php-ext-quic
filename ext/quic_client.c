@@ -3,6 +3,7 @@
 #endif
 
 #include "quic_client.h"
+#include "quic_poll_stream.h"
 #include "quic_stream.h"
 
 #include "main/php_network.h"
@@ -1400,9 +1401,8 @@ PHP_METHOD(Quic_ClientConnection, getPollStream)
     RETURN_THROWS();
   }
 
-  stream = php_stream_sock_open_from_socket(dup_fd, NULL);
+  stream = quic_poll_stream_open(dup_fd, "Quic\\ClientConnection::getPollStream()");
   if (stream == NULL) {
-    close(dup_fd);
     zend_throw_exception_ex(quic_exception_ce, 0, "Failed to expose UDP socket as a PHP stream");
     RETURN_THROWS();
   }

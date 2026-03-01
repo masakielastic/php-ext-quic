@@ -38,7 +38,7 @@ if test "$PHP_QUIC" != "no"; then
   PHP_EVAL_LIBLINE([$QUIC_LIBS], [QUIC_SHARED_LIBADD])
 
   PHP_NEW_EXTENSION([quic],
-    [quic.c quic_client.c quic_server.c quic_stream.c],
+    [quic.c quic_client.c quic_poll_stream.c quic_server.c quic_stream.c],
     [$ext_shared],, [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1])
 
   PHP_SUBST([QUIC_SHARED_LIBADD])

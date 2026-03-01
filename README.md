@@ -92,8 +92,9 @@ Streams:
 `getPollStream()` is for readiness monitoring only.
 
 Do not call `fread()`, `fwrite()`, `stream_socket_recvfrom()`, or
-`stream_socket_sendto()` on that stream. Use it with `stream_select()` or loop
-watchers, then call the extension methods:
+`stream_socket_sendto()` on that stream. The poll stream actively rejects
+direct reads and writes. Use it with `stream_select()` or loop watchers, then
+call the extension methods:
 
 - `handleReadable()`
 - `handleExpiry()`

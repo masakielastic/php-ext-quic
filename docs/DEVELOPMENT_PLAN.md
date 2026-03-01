@@ -64,7 +64,8 @@ The extension should expose:
   process ngtcp2 expiry
 
 The UDP stream must be treated as a readiness handle only. Userland should not
-read or write packets directly through that stream.
+read or write packets directly through that stream. The stream wrapper should
+reject direct reads and writes so misuse fails early.
 
 This allows integration with:
 

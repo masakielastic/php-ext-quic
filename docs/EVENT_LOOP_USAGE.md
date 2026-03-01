@@ -10,7 +10,8 @@ only.
 Do not call `fread()`, `fwrite()`, `stream_socket_recvfrom()`, or
 `stream_socket_sendto()` on that stream from PHP. If userland reads or writes
 the socket directly, packet flow will diverge from the extension's internal
-QUIC state.
+QUIC state. The poll stream rejects direct reads and writes so this misuse
+fails early.
 
 Use the stream only with APIs such as:
 
