@@ -26,6 +26,8 @@ var_dump(method_exists(Quic\Stream::class, 'stop'));
 var_dump(method_exists(Quic\Stream::class, 'isPeerReset'));
 var_dump(method_exists(Quic\Stream::class, 'getPeerResetErrorCode'));
 var_dump(method_exists(Quic\Stream::class, 'getPeerResetFinalSize'));
+var_dump(method_exists(Quic\Stream::class, 'isPeerWriteStopped'));
+var_dump(method_exists(Quic\Stream::class, 'getPeerWriteStopErrorCode'));
 ?>
 --EXPECT--
 bool(true)
@@ -41,6 +43,8 @@ bool(false)
 bool(false)
 bool(false)
 bool(false)
+bool(true)
+bool(true)
 bool(true)
 bool(true)
 bool(true)

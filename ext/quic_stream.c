@@ -200,6 +200,19 @@ void quic_stream_state_mark_peer_reset(
   state->peer_fin_received = true;
 }
 
+void quic_stream_state_mark_peer_write_stopped(
+  quic_stream_state *state,
+  uint64_t app_error_code,
+  bool error_code_known
+)
+{
+  state->peer_write_stopped_received = true;
+  state->peer_write_stopped_error_code_known = error_code_known;
+  if (error_code_known) {
+    state->peer_write_stopped_error_code = app_error_code;
+  }
+}
+
 void quic_stream_state_mark_closed(quic_stream_state *state)
 {
   state->closed = true;
@@ -428,6 +441,27 @@ PHP_METHOD(Quic_Stream, getPeerResetFinalSize)
   RETURN_LONG((zend_long) intern->state->peer_reset_final_size);
 }
 
+PHP_METHOD(Quic_Stream, isPeerWriteStopped)
+{
+  quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
+
+  RETURN_BOOL(intern->state->peer_write_stopped_received);
+}
+
+PHP_METHOD(Quic_Stream, getPeerWriteStopErrorCode)
+{
+  quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
+
+  if (
+    !intern->state->peer_write_stopped_received ||
+    !intern->state->peer_write_stopped_error_code_known
+  ) {
+    RETURN_NULL();
+  }
+
+  RETURN_LONG((zend_long) intern->state->peer_write_stopped_error_code);
+}
+
 PHP_METHOD(Quic_Stream, reset)
 {
   quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
@@ -513,6 +547,8 @@ static const zend_function_entry quic_stream_methods[] = {
   PHP_ME(Quic_Stream, isPeerReset, arginfo_quic_stream_bool, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, getPeerResetErrorCode, arginfo_quic_stream_nullable_long, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, getPeerResetFinalSize, arginfo_quic_stream_nullable_long, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_Stream, isPeerWriteStopped, arginfo_quic_stream_bool, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_Stream, getPeerWriteStopErrorCode, arginfo_quic_stream_nullable_long, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, reset, arginfo_quic_stream_error_code, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, stop, arginfo_quic_stream_error_code, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_Stream, close, arginfo_quic_stream_void, ZEND_ACC_PUBLIC)

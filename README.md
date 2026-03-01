@@ -86,13 +86,16 @@ Streams:
 - `isPeerReset()`
 - `getPeerResetErrorCode()`
 - `getPeerResetFinalSize()`
+- `isPeerWriteStopped()`
+- `getPeerWriteStopErrorCode()`
 - `reset()`
 - `stop()`
 - `close()`
 
 `Quic\Stream` currently exposes peer-originated `RESET_STREAM` details. Remote
-`STOP_SENDING` is not surfaced as a separate reason API in this minimal
-binding.
+`STOP_SENDING` is surfaced as peer write-stop state. The error code may remain
+`null` if ngtcp2 only exposes the stop via `ERR_STREAM_SHUT_WR` before a later
+close callback carries an application error code.
 
 ## Core rule
 

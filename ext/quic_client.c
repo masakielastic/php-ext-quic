@@ -242,6 +242,12 @@ static int quic_client_stream_close_cb(
   }
 
   if (state != NULL) {
+    if ((flags & NGTCP2_STREAM_CLOSE_FLAG_APP_ERROR_CODE_SET) &&
+        !state->peer_reset_received &&
+        !state->read_stopped &&
+        !state->write_reset) {
+      quic_stream_state_mark_peer_write_stopped(state, app_error_code, true);
+    }
     quic_stream_state_mark_closed(state);
   }
 
@@ -971,6 +977,9 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
       }
 
       if (state != NULL && nwrite == NGTCP2_ERR_STREAM_SHUT_WR) {
+        if (!state->peer_write_stopped_received) {
+          quic_stream_state_mark_peer_write_stopped(state, 0, false);
+        }
         quic_stream_state_mark_write_blocked(state);
       }
 
