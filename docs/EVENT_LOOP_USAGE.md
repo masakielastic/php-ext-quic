@@ -4,7 +4,8 @@ This extension is designed to be driven from userland.
 
 ## Core rule
 
-`getStream()` returns the underlying UDP socket for readiness monitoring only.
+`getPollStream()` returns the underlying UDP socket for readiness monitoring
+only.
 
 Do not call `fread()`, `fwrite()`, `stream_socket_recvfrom()`, or
 `stream_socket_sendto()` on that stream from PHP. If userland reads or writes
@@ -22,6 +23,9 @@ All QUIC I/O must still go through:
 - `handleExpiry()`
 - `flush()`
 
+`getStream()` is kept as a compatibility alias, but new code should prefer
+`getPollStream()` so the intended use is explicit.
+
 ## Server object split
 
 For servers, treat `Quic\ServerConnection` as the listener and
@@ -29,7 +33,7 @@ For servers, treat `Quic\ServerConnection` as the listener and
 
 Preferred usage:
 
-- use `ServerConnection::getStream()`, `handleReadable()`, `handleExpiry()`,
+- use `ServerConnection::getPollStream()`, `handleReadable()`, `handleExpiry()`,
   and `flush()` to drive the shared UDP listener
 - use `ServerConnection::popAcceptedPeer()` to obtain newly accepted peers
 - use `ServerPeer` for peer-specific state such as handshake completion or peer
@@ -58,7 +62,7 @@ $client = new Quic\ClientConnection('127.0.0.1', 4433, [
     'verify_peer' => false,
 ]);
 
-$socket = $client->getStream();
+$socket = $client->getPollStream();
 $client->startHandshake();
 $stream = null;
 
@@ -113,7 +117,7 @@ $server = new Quic\ServerConnection('127.0.0.1', 4433, [
     'response' => null,
 ]);
 
-$socket = $server->getStream();
+$socket = $server->getPollStream();
 $peer = null;
 $accepted = null;
 $responded = false;

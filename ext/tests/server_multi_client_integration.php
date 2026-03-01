@@ -123,19 +123,19 @@ $server = new Quic\ServerConnection('127.0.0.1', 0, [
     'keyfile' => '/tmp/nghttp3-localhost.key',
     'response' => null,
 ]);
-$serverStream = $server->getStream();
+$serverStream = $server->getPollStream();
 $port = $server->getLocalAddress()['port'];
 
 $client1 = new Quic\ClientConnection('127.0.0.1', $port, [
     'verify_peer' => false,
 ]);
-$client1Stream = $client1->getStream();
+$client1Stream = $client1->getPollStream();
 $exchange1 = driveExchange($server, $serverStream, $client1, $client1Stream, "ping-1\n");
 
 $client2 = new Quic\ClientConnection('127.0.0.1', $port, [
     'verify_peer' => false,
 ]);
-$client2Stream = $client2->getStream();
+$client2Stream = $client2->getPollStream();
 $exchange2 = driveExchange($server, $serverStream, $client2, $client2Stream, "ping-2\n");
 
 $peerAddress = $exchange2['peer_address'];

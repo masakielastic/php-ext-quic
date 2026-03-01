@@ -9,7 +9,7 @@ if (!extension_loaded('quic')) {
 --FILE--
 <?php
 $client = new Quic\ClientConnection('127.0.0.1', 4433);
-$stream = $client->getStream();
+$stream = $client->getPollStream();
 $peer = $client->getPeerAddress();
 $local = $client->getLocalAddress();
 
@@ -26,7 +26,7 @@ var_dump($local['port'] > 0);
 $client->close();
 
 try {
-    $client->getStream();
+    $client->getPollStream();
 } catch (Quic\Exception $e) {
     echo $e->getMessage(), PHP_EOL;
 }

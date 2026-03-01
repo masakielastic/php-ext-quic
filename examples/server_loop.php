@@ -23,7 +23,7 @@ $server = new Quic\ServerConnection('127.0.0.1', $port, [
     'response' => null,
 ]);
 
-$socket = $server->getStream();
+$socket = $server->getPollStream();
 $peer = null;
 $accepted = null;
 $responded = false;

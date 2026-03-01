@@ -1979,6 +1979,38 @@ PHP_METHOD(Quic_ServerConnection, getStream)
   php_stream_to_zval(stream, return_value);
 }
 
+PHP_METHOD(Quic_ServerConnection, getPollStream)
+{
+  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+  php_stream *stream;
+  php_socket_t dup_fd;
+
+  if (intern->fd < 0) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Socket is closed");
+    RETURN_THROWS();
+  }
+
+  dup_fd = dup(intern->fd);
+  if (dup_fd < 0) {
+    zend_throw_exception_ex(
+      quic_exception_ce,
+      errno,
+      "dup() failed: %s",
+      strerror(errno)
+    );
+    RETURN_THROWS();
+  }
+
+  stream = php_stream_sock_open_from_socket(dup_fd, NULL);
+  if (stream == NULL) {
+    close(dup_fd);
+    zend_throw_exception_ex(quic_exception_ce, 0, "Failed to create PHP stream from socket");
+    RETURN_THROWS();
+  }
+
+  php_stream_to_zval(stream, return_value);
+}
+
 PHP_METHOD(Quic_ServerConnection, accept)
 {
   quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
@@ -2318,6 +2350,7 @@ PHP_METHOD(Quic_ServerPeer, close)
 
 static const zend_function_entry quic_server_connection_methods[] = {
   PHP_ME(Quic_ServerConnection, __construct, arginfo_quic_server_construct, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_ServerConnection, getPollStream, arginfo_quic_server_get_stream, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, getStream, arginfo_quic_server_get_stream, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, accept, arginfo_quic_server_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, handleReadable, arginfo_quic_server_void, ZEND_ACC_PUBLIC)

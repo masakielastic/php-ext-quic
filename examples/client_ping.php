@@ -15,7 +15,7 @@ $client = new Quic\ClientConnection($host, $port, [
     'verify_peer' => false,
 ]);
 
-$socket = $client->getStream();
+$socket = $client->getPollStream();
 $client->startHandshake();
 
 $stream = null;

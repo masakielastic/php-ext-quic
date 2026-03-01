@@ -13,8 +13,8 @@ $client = new Quic\ClientConnection('127.0.0.1', $server->getLocalAddress()['por
     'verify_peer' => false,
 ]);
 
-$serverStream = $server->getStream();
-$clientStream = $client->getStream();
+$serverStream = $server->getPollStream();
+$clientStream = $client->getPollStream();
 $client->startHandshake();
 
 $opened = false;

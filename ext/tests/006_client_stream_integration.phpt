@@ -102,7 +102,7 @@ try {
     $client = new Quic\ClientConnection('127.0.0.1', $port, [
         'verify_peer' => false,
     ]);
-    $socket = $client->getStream();
+    $socket = $client->getPollStream();
     stream_set_blocking($socket, false);
     $client->startHandshake();
 

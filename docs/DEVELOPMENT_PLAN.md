@@ -100,7 +100,9 @@ Purpose: active QUIC client connection on a connected UDP socket.
 Initial methods:
 
 - `__construct(string $host, int|string $port, array $options = [])`
-- `getStream()`: returns the UDP socket as a PHP stream resource
+- `getPollStream()`: returns the UDP socket as a PHP stream resource for
+  readiness monitoring
+- `getStream()`: compatibility alias for `getPollStream()`
 - `startHandshake(): void`
 - `handleReadable(): void`
 - `handleExpiry(): void`
@@ -130,7 +132,8 @@ Purpose: UDP listener plus peer registry for server-side QUIC connections.
 Initial methods:
 
 - `__construct(string $host, int|string $port, array $options = [])`
-- `getStream()`
+- `getPollStream()`
+- `getStream()` compatibility alias
 - `accept(): void`
 - `handleReadable(): void`
 - `handleExpiry(): void`
@@ -214,7 +217,7 @@ Milestone 1 stream behavior:
 Recommended loop sequence for both client and server:
 
 1. Build connection object.
-2. Obtain UDP stream via `getStream()`.
+2. Obtain UDP stream via `getPollStream()`.
 3. Treat that stream as monitoring-only and do not perform direct socket I/O on
    it from PHP.
 4. Call `startHandshake()` for clients or `accept()` for servers.
@@ -356,7 +359,8 @@ Deliverable:
 - implement client socket creation
 - implement GnuTLS client session setup
 - wire `ngtcp2_conn_client_new()`
-- expose `getStream()`, `startHandshake()`, `handleReadable()`, `handleExpiry()`,
+- expose `getPollStream()`, `startHandshake()`, `handleReadable()`,
+  `handleExpiry()`,
   `flush()`, `getTimeout()`, `close()`
 - track handshake completion
 

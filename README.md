@@ -56,7 +56,8 @@ This repository includes PIE metadata in [composer.json](/home/masakielastic/php
 Client:
 
 - `Quic\ClientConnection`
-- `getStream()`
+- `getPollStream()`
+- `getStream()` as a compatibility alias
 - `startHandshake()`
 - `handleReadable()`
 - `handleExpiry()`
@@ -87,7 +88,7 @@ Streams:
 
 ## Core rule
 
-`getStream()` is for readiness monitoring only.
+`getPollStream()` is for readiness monitoring only.
 
 Do not call `fread()`, `fwrite()`, `stream_socket_recvfrom()`, or
 `stream_socket_sendto()` on that stream. Use it with `stream_select()` or loop
@@ -106,7 +107,7 @@ $client = new Quic\ClientConnection('127.0.0.1', 18443, [
     'verify_peer' => false,
 ]);
 
-$socket = $client->getStream();
+$socket = $client->getPollStream();
 stream_set_blocking($socket, false);
 $client->startHandshake();
 $stream = null;
@@ -162,7 +163,7 @@ $server = new Quic\ServerConnection('127.0.0.1', 18443, [
     'response' => null,
 ]);
 
-$socket = $server->getStream();
+$socket = $server->getPollStream();
 $peer = null;
 $accepted = null;
 

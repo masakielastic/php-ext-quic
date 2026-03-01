@@ -9,7 +9,7 @@ if (!extension_loaded('quic')) {
 --FILE--
 <?php
 $server = new Quic\ServerConnection('127.0.0.1', 0);
-$stream = $server->getStream();
+$stream = $server->getPollStream();
 $local = $server->getLocalAddress();
 $peer = $server->getPeerAddress();
 

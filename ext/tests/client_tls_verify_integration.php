@@ -76,7 +76,7 @@ function driveVerifiedExchange(
         $server->getLocalAddress()['port'],
         $clientOptions,
     );
-    $clientStream = $client->getStream();
+    $clientStream = $client->getPollStream();
     $acceptedPeer = null;
     $accepted = false;
     $opened = false;
@@ -187,7 +187,7 @@ $server = new Quic\ServerConnection('127.0.0.1', 0, [
     'keyfile' => $key,
     'response' => null,
 ]);
-$serverStream = $server->getStream();
+$serverStream = $server->getPollStream();
 stream_set_blocking($serverStream, false);
 
 try {
