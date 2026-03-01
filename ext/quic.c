@@ -38,6 +38,12 @@ void quic_throw_not_implemented(const char *method)
 PHP_MINIT_FUNCTION(quic)
 {
   zend_class_entry ce;
+  int rv;
+
+  rv = gnutls_global_init();
+  if (rv != 0) {
+    return FAILURE;
+  }
 
   quic_touch_dependencies();
 
@@ -59,6 +65,13 @@ PHP_MINIT_FUNCTION(quic)
   return SUCCESS;
 }
 
+PHP_MSHUTDOWN_FUNCTION(quic)
+{
+  gnutls_global_deinit();
+
+  return SUCCESS;
+}
+
 PHP_MINFO_FUNCTION(quic)
 {
   php_info_print_table_start();
@@ -74,7 +87,7 @@ zend_module_entry quic_module_entry = {
   PHP_QUIC_EXTNAME,
   NULL,
   PHP_MINIT(quic),
-  NULL,
+  PHP_MSHUTDOWN(quic),
   NULL,
   NULL,
   PHP_MINFO(quic),

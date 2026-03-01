@@ -8,30 +8,56 @@
 #include "main/php_network.h"
 #include "main/php_streams.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <gnutls/crypto.h>
+#include <gnutls/gnutls.h>
 #include <netdb.h>
+#include <ngtcp2/ngtcp2.h>
+#include <ngtcp2/ngtcp2_crypto.h>
+#include <ngtcp2/ngtcp2_crypto_gnutls.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
+
+#define QUIC_CLIENT_DEFAULT_ALPN "hq-interop"
 
 typedef struct _quic_client_connection_object {
   php_socket_t fd;
   zend_string *host;
   zend_string *port;
+  zend_string *alpn;
+  zend_string *server_name;
+  zend_string *cafile;
+  zend_string *capath;
+  bool verify_peer;
+  bool started;
+  bool handshake_complete;
   struct sockaddr_storage local_addr;
   socklen_t local_addrlen;
   struct sockaddr_storage peer_addr;
   socklen_t peer_addrlen;
+  ngtcp2_crypto_conn_ref conn_ref;
+  gnutls_certificate_credentials_t cred;
+  gnutls_session_t session;
+  ngtcp2_conn *conn;
+  ngtcp2_ccerr last_error;
   zend_object std;
 } quic_client_connection_object;
 
 zend_class_entry *quic_client_connection_ce;
 
 static zend_object_handlers quic_client_connection_handlers;
+
+static const char quic_client_tls_priority[] =
+  "NORMAL:-VERS-ALL:+VERS-TLS1.3:-CIPHER-ALL:+AES-128-GCM:+AES-256-GCM:"
+  "+CHACHA20-POLY1305:+AES-128-CCM:-GROUP-ALL:+GROUP-SECP256R1:+GROUP-X25519:"
+  "+GROUP-SECP384R1:+GROUP-SECP521R1:%DISABLE_TLS13_COMPAT_MODE";
 
 static inline quic_client_connection_object *quic_client_connection_from_obj(zend_object *object)
 {
@@ -40,6 +66,126 @@ static inline quic_client_connection_object *quic_client_connection_from_obj(zen
 
 #define Z_QUIC_CLIENT_CONNECTION_P(zv) \
   quic_client_connection_from_obj(Z_OBJ_P((zv)))
+
+static bool quic_client_fill_random(void *dest, size_t destlen)
+{
+  int rv = gnutls_rnd(GNUTLS_RND_RANDOM, dest, destlen);
+
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_rnd() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  return true;
+}
+
+static uint64_t quic_client_timestamp(void)
+{
+  struct timespec tp;
+
+  if (clock_gettime(CLOCK_MONOTONIC, &tp) != 0) {
+    zend_throw_exception_ex(
+      quic_exception_ce,
+      errno,
+      "clock_gettime() failed: %s",
+      strerror(errno)
+    );
+    return 0;
+  }
+
+  return (uint64_t) tp.tv_sec * NGTCP2_SECONDS + (uint64_t) tp.tv_nsec;
+}
+
+static int quic_client_numeric_host_family(const char *hostname, int family)
+{
+  uint8_t buffer[sizeof(struct in6_addr)];
+
+  return inet_pton(family, hostname, buffer) == 1;
+}
+
+static int quic_client_numeric_host(const char *hostname)
+{
+  return quic_client_numeric_host_family(hostname, AF_INET) ||
+    quic_client_numeric_host_family(hostname, AF_INET6);
+}
+
+static ngtcp2_conn *quic_client_get_conn(ngtcp2_crypto_conn_ref *conn_ref)
+{
+  quic_client_connection_object *intern = conn_ref->user_data;
+
+  return intern->conn;
+}
+
+static void quic_client_rand_cb(uint8_t *dest, size_t destlen, const ngtcp2_rand_ctx *rand_ctx)
+{
+  (void) rand_ctx;
+
+  if (gnutls_rnd(GNUTLS_RND_RANDOM, dest, destlen) != 0) {
+    abort();
+  }
+}
+
+static int quic_client_get_new_connection_id_cb(
+  ngtcp2_conn *conn,
+  ngtcp2_cid *cid,
+  uint8_t *token,
+  size_t cidlen,
+  void *user_data
+)
+{
+  (void) conn;
+  (void) user_data;
+
+  if (gnutls_rnd(GNUTLS_RND_RANDOM, cid->data, cidlen) != 0) {
+    return NGTCP2_ERR_CALLBACK_FAILURE;
+  }
+
+  cid->datalen = cidlen;
+
+  if (gnutls_rnd(GNUTLS_RND_RANDOM, token, NGTCP2_STATELESS_RESET_TOKENLEN) != 0) {
+    return NGTCP2_ERR_CALLBACK_FAILURE;
+  }
+
+  return 0;
+}
+
+static int quic_client_handshake_completed_cb(ngtcp2_conn *conn, void *user_data)
+{
+  quic_client_connection_object *intern = user_data;
+
+  (void) conn;
+
+  intern->handshake_complete = true;
+
+  return 0;
+}
+
+static void quic_client_reset_connection_state(quic_client_connection_object *intern)
+{
+  if (intern->conn != NULL) {
+    ngtcp2_conn_del(intern->conn);
+    intern->conn = NULL;
+  }
+
+  if (intern->session != NULL) {
+    gnutls_deinit(intern->session);
+    intern->session = NULL;
+  }
+
+  if (intern->cred != NULL) {
+    gnutls_certificate_free_credentials(intern->cred);
+    intern->cred = NULL;
+  }
+
+  intern->started = false;
+  intern->handshake_complete = false;
+  ngtcp2_ccerr_default(&intern->last_error);
+}
 
 static zend_string *quic_client_port_to_string(zval *port)
 {
@@ -72,6 +218,118 @@ static zend_string *quic_client_port_to_string(zval *port)
 
   zend_argument_type_error(2, "must be of type string|int");
   return NULL;
+}
+
+static zend_string *quic_client_get_string_option(HashTable *options, const char *key)
+{
+  zval *value = zend_hash_str_find(options, key, strlen(key));
+
+  if (value == NULL || Z_TYPE_P(value) == IS_NULL) {
+    return NULL;
+  }
+
+  if (Z_TYPE_P(value) != IS_STRING) {
+    zend_type_error("Option \"%s\" must be of type ?string", key);
+    return NULL;
+  }
+
+  return zend_string_copy(Z_STR_P(value));
+}
+
+static bool quic_client_get_bool_option(HashTable *options, const char *key, bool default_value)
+{
+  zval *value = zend_hash_str_find(options, key, strlen(key));
+
+  if (value == NULL) {
+    return default_value;
+  }
+
+  if (Z_TYPE_P(value) != IS_TRUE && Z_TYPE_P(value) != IS_FALSE) {
+    zend_type_error("Option \"%s\" must be of type bool", key);
+    return default_value;
+  }
+
+  return Z_TYPE_P(value) == IS_TRUE;
+}
+
+static bool quic_client_apply_options(quic_client_connection_object *intern, zval *options)
+{
+  zend_string *alpn;
+  zend_string *server_name;
+  zend_string *cafile;
+  zend_string *capath;
+
+  if (options == NULL) {
+    return true;
+  }
+
+  alpn = quic_client_get_string_option(Z_ARRVAL_P(options), "alpn");
+  if (EG(exception) != NULL) {
+    return false;
+  }
+
+  server_name = quic_client_get_string_option(Z_ARRVAL_P(options), "server_name");
+  if (EG(exception) != NULL) {
+    if (alpn != NULL) {
+      zend_string_release(alpn);
+    }
+    return false;
+  }
+
+  cafile = quic_client_get_string_option(Z_ARRVAL_P(options), "cafile");
+  if (EG(exception) != NULL) {
+    if (alpn != NULL) {
+      zend_string_release(alpn);
+    }
+    if (server_name != NULL) {
+      zend_string_release(server_name);
+    }
+    return false;
+  }
+
+  capath = quic_client_get_string_option(Z_ARRVAL_P(options), "capath");
+  if (EG(exception) != NULL) {
+    if (alpn != NULL) {
+      zend_string_release(alpn);
+    }
+    if (server_name != NULL) {
+      zend_string_release(server_name);
+    }
+    if (cafile != NULL) {
+      zend_string_release(cafile);
+    }
+    return false;
+  }
+
+  if (alpn != NULL) {
+    zend_string_release(intern->alpn);
+    intern->alpn = alpn;
+  }
+
+  if (server_name != NULL) {
+    if (intern->server_name != NULL) {
+      zend_string_release(intern->server_name);
+    }
+    intern->server_name = server_name;
+  }
+
+  if (cafile != NULL) {
+    if (intern->cafile != NULL) {
+      zend_string_release(intern->cafile);
+    }
+    intern->cafile = cafile;
+  }
+
+  if (capath != NULL) {
+    if (intern->capath != NULL) {
+      zend_string_release(intern->capath);
+    }
+    intern->capath = capath;
+  }
+
+  intern->verify_peer = quic_client_get_bool_option(Z_ARRVAL_P(options), "verify_peer", intern->verify_peer);
+
+  return EG(exception) == NULL;
 }
 
 static bool quic_client_set_nonblocking(php_socket_t fd)
@@ -111,6 +369,7 @@ static bool quic_client_connect_socket(
   struct addrinfo *result = NULL;
   struct addrinfo *rp;
   int rv;
+  int saved_errno = 0;
 
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_DGRAM;
@@ -133,6 +392,7 @@ static bool quic_client_connect_socket(
 
     fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
     if (fd < 0) {
+      saved_errno = errno;
       continue;
     }
 
@@ -146,11 +406,12 @@ static bool quic_client_connect_socket(
       }
 
       if (getsockname(fd, (struct sockaddr *) &intern->local_addr, &local_addrlen) != 0) {
+        saved_errno = errno;
         zend_throw_exception_ex(
           quic_exception_ce,
-          errno,
+          saved_errno,
           "getsockname() failed: %s",
-          strerror(errno)
+          strerror(saved_errno)
         );
         close(fd);
         freeaddrinfo(result);
@@ -166,6 +427,7 @@ static bool quic_client_connect_socket(
       return true;
     }
 
+    saved_errno = errno;
     close(fd);
   }
 
@@ -173,14 +435,375 @@ static bool quic_client_connect_socket(
 
   zend_throw_exception_ex(
     quic_exception_ce,
-    errno,
+    saved_errno,
     "Could not connect UDP socket to %s:%s: %s",
     ZSTR_VAL(host),
     ZSTR_VAL(port),
-    strerror(errno)
+    strerror(saved_errno)
   );
 
   return false;
+}
+
+static bool quic_client_load_trust_store(quic_client_connection_object *intern)
+{
+  int rv;
+  int loaded = 0;
+
+  if (!intern->verify_peer) {
+    return true;
+  }
+
+  if (intern->cafile != NULL) {
+    rv = gnutls_certificate_set_x509_trust_file(
+      intern->cred,
+      ZSTR_VAL(intern->cafile),
+      GNUTLS_X509_FMT_PEM
+    );
+    if (rv < 0) {
+      zend_throw_exception_ex(
+        quic_tls_exception_ce,
+        rv,
+        "gnutls_certificate_set_x509_trust_file(%s) failed: %s",
+        ZSTR_VAL(intern->cafile),
+        gnutls_strerror(rv)
+      );
+      return false;
+    }
+    loaded += rv;
+  }
+
+  if (intern->capath != NULL) {
+    rv = gnutls_certificate_set_x509_trust_dir(
+      intern->cred,
+      ZSTR_VAL(intern->capath),
+      GNUTLS_X509_FMT_PEM
+    );
+    if (rv < 0) {
+      zend_throw_exception_ex(
+        quic_tls_exception_ce,
+        rv,
+        "gnutls_certificate_set_x509_trust_dir(%s) failed: %s",
+        ZSTR_VAL(intern->capath),
+        gnutls_strerror(rv)
+      );
+      return false;
+    }
+    loaded += rv;
+  }
+
+  if (loaded > 0) {
+    return true;
+  }
+
+  rv = gnutls_certificate_set_x509_system_trust(intern->cred);
+  if (rv < 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_certificate_set_x509_system_trust() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  return true;
+}
+
+static bool quic_client_tls_init(quic_client_connection_object *intern)
+{
+  gnutls_datum_t alpn;
+  const char *server_name;
+  int rv;
+
+  rv = gnutls_certificate_allocate_credentials(&intern->cred);
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_certificate_allocate_credentials() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  if (!quic_client_load_trust_store(intern)) {
+    return false;
+  }
+
+  rv = gnutls_init(
+    &intern->session,
+    GNUTLS_CLIENT | GNUTLS_ENABLE_EARLY_DATA | GNUTLS_NO_END_OF_EARLY_DATA
+  );
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_init() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  rv = gnutls_priority_set_direct(intern->session, quic_client_tls_priority, NULL);
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_priority_set_direct() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  if (ngtcp2_crypto_gnutls_configure_client_session(intern->session) != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      0,
+      "ngtcp2_crypto_gnutls_configure_client_session() failed"
+    );
+    return false;
+  }
+
+  rv = gnutls_credentials_set(intern->session, GNUTLS_CRD_CERTIFICATE, intern->cred);
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_credentials_set() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  alpn.data = (unsigned char *) ZSTR_VAL(intern->alpn);
+  alpn.size = (unsigned int) ZSTR_LEN(intern->alpn);
+
+  rv = gnutls_alpn_set_protocols(intern->session, &alpn, 1, GNUTLS_ALPN_MANDATORY);
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_alpn_set_protocols() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  server_name = intern->server_name != NULL ? ZSTR_VAL(intern->server_name) : NULL;
+  if (server_name == NULL) {
+    if (quic_client_numeric_host(ZSTR_VAL(intern->host))) {
+      server_name = "localhost";
+    } else {
+      server_name = ZSTR_VAL(intern->host);
+    }
+  }
+
+  if (server_name != NULL && *server_name != '\0') {
+    rv = gnutls_server_name_set(
+      intern->session,
+      GNUTLS_NAME_DNS,
+      server_name,
+      strlen(server_name)
+    );
+    if (rv != 0) {
+      zend_throw_exception_ex(
+        quic_tls_exception_ce,
+        rv,
+        "gnutls_server_name_set() failed: %s",
+        gnutls_strerror(rv)
+      );
+      return false;
+    }
+  }
+
+  if (intern->verify_peer) {
+    gnutls_session_set_verify_cert(intern->session, server_name, 0);
+  }
+
+  intern->conn_ref.get_conn = quic_client_get_conn;
+  intern->conn_ref.user_data = intern;
+  gnutls_session_set_ptr(intern->session, &intern->conn_ref);
+
+  return true;
+}
+
+static bool quic_client_quic_init(quic_client_connection_object *intern)
+{
+  ngtcp2_path path = {
+    .local = {
+      .addr = (struct sockaddr *) &intern->local_addr,
+      .addrlen = intern->local_addrlen,
+    },
+    .remote = {
+      .addr = (struct sockaddr *) &intern->peer_addr,
+      .addrlen = intern->peer_addrlen,
+    },
+  };
+  ngtcp2_callbacks callbacks = {
+    .client_initial = ngtcp2_crypto_client_initial_cb,
+    .recv_crypto_data = ngtcp2_crypto_recv_crypto_data_cb,
+    .handshake_completed = quic_client_handshake_completed_cb,
+    .encrypt = ngtcp2_crypto_encrypt_cb,
+    .decrypt = ngtcp2_crypto_decrypt_cb,
+    .hp_mask = ngtcp2_crypto_hp_mask_cb,
+    .recv_retry = ngtcp2_crypto_recv_retry_cb,
+    .rand = quic_client_rand_cb,
+    .get_new_connection_id = quic_client_get_new_connection_id_cb,
+    .update_key = ngtcp2_crypto_update_key_cb,
+    .delete_crypto_aead_ctx = ngtcp2_crypto_delete_crypto_aead_ctx_cb,
+    .delete_crypto_cipher_ctx = ngtcp2_crypto_delete_crypto_cipher_ctx_cb,
+    .get_path_challenge_data = ngtcp2_crypto_get_path_challenge_data_cb,
+    .version_negotiation = ngtcp2_crypto_version_negotiation_cb,
+  };
+  ngtcp2_settings settings;
+  ngtcp2_transport_params params;
+  ngtcp2_cid dcid;
+  ngtcp2_cid scid;
+  uint64_t now;
+  int rv;
+
+  now = quic_client_timestamp();
+  if (EG(exception) != NULL) {
+    return false;
+  }
+
+  dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
+  if (!quic_client_fill_random(dcid.data, dcid.datalen)) {
+    return false;
+  }
+
+  scid.datalen = 8;
+  if (!quic_client_fill_random(scid.data, scid.datalen)) {
+    return false;
+  }
+
+  ngtcp2_settings_default(&settings);
+  settings.initial_ts = now;
+
+  ngtcp2_transport_params_default(&params);
+  params.initial_max_streams_uni = 3;
+  params.initial_max_stream_data_bidi_local = 128 * 1024;
+  params.initial_max_data = 1024 * 1024;
+
+  rv = ngtcp2_conn_client_new(
+    &intern->conn,
+    &dcid,
+    &scid,
+    &path,
+    NGTCP2_PROTO_VER_V1,
+    &callbacks,
+    &settings,
+    &params,
+    NULL,
+    intern
+  );
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_protocol_exception_ce,
+      rv,
+      "ngtcp2_conn_client_new() failed: %s",
+      ngtcp2_strerror(rv)
+    );
+    return false;
+  }
+
+  ngtcp2_conn_set_tls_native_handle(intern->conn, intern->session);
+
+  return true;
+}
+
+static bool quic_client_send_packet(quic_client_connection_object *intern, const uint8_t *data, size_t datalen)
+{
+  ssize_t nwrite;
+
+  do {
+    nwrite = send(intern->fd, data, datalen, 0);
+  } while (nwrite < 0 && errno == EINTR);
+
+  if (nwrite < 0) {
+    zend_throw_exception_ex(
+      quic_exception_ce,
+      errno,
+      "send() failed: %s",
+      strerror(errno)
+    );
+    return false;
+  }
+
+  if ((size_t) nwrite != datalen) {
+    zend_throw_exception_ex(
+      quic_exception_ce,
+      0,
+      "Short UDP send: %zd != %zu",
+      nwrite,
+      datalen
+    );
+    return false;
+  }
+
+  return true;
+}
+
+static bool quic_client_flush_packets(quic_client_connection_object *intern)
+{
+  ngtcp2_path_storage path_storage;
+  ngtcp2_pkt_info packet_info;
+  ngtcp2_vec datav = {
+    .base = NULL,
+    .len = 0,
+  };
+  uint8_t buffer[1452];
+  uint64_t now;
+
+  now = quic_client_timestamp();
+  if (EG(exception) != NULL) {
+    return false;
+  }
+
+  ngtcp2_path_storage_zero(&path_storage);
+
+  for (;;) {
+    ngtcp2_ssize nwrite;
+    ngtcp2_ssize data_written = 0;
+
+    nwrite = ngtcp2_conn_writev_stream(
+      intern->conn,
+      &path_storage.path,
+      &packet_info,
+      buffer,
+      sizeof(buffer),
+      &data_written,
+      NGTCP2_WRITE_STREAM_FLAG_MORE,
+      -1,
+      &datav,
+      0,
+      now
+    );
+
+    if (nwrite < 0) {
+      if (nwrite == NGTCP2_ERR_WRITE_MORE) {
+        continue;
+      }
+
+      ngtcp2_ccerr_set_liberr(&intern->last_error, (int) nwrite, NULL, 0);
+      zend_throw_exception_ex(
+        quic_protocol_exception_ce,
+        (int) nwrite,
+        "ngtcp2_conn_writev_stream() failed: %s",
+        ngtcp2_strerror((int) nwrite)
+      );
+      return false;
+    }
+
+    if (nwrite == 0) {
+      return true;
+    }
+
+    if (!quic_client_send_packet(intern, buffer, (size_t) nwrite)) {
+      return false;
+    }
+  }
 }
 
 static void quic_client_address_to_array(
@@ -239,6 +862,8 @@ static void quic_client_connection_free_object(zend_object *object)
 {
   quic_client_connection_object *intern = quic_client_connection_from_obj(object);
 
+  quic_client_reset_connection_state(intern);
+
   if (intern->fd >= 0) {
     close(intern->fd);
     intern->fd = -1;
@@ -254,6 +879,26 @@ static void quic_client_connection_free_object(zend_object *object)
     intern->port = NULL;
   }
 
+  if (intern->alpn != NULL) {
+    zend_string_release(intern->alpn);
+    intern->alpn = NULL;
+  }
+
+  if (intern->server_name != NULL) {
+    zend_string_release(intern->server_name);
+    intern->server_name = NULL;
+  }
+
+  if (intern->cafile != NULL) {
+    zend_string_release(intern->cafile);
+    intern->cafile = NULL;
+  }
+
+  if (intern->capath != NULL) {
+    zend_string_release(intern->capath);
+    intern->capath = NULL;
+  }
+
   zend_object_std_dtor(&intern->std);
 }
 
@@ -265,8 +910,19 @@ static zend_object *quic_client_connection_create_object(zend_class_entry *class
   intern->fd = -1;
   intern->host = NULL;
   intern->port = NULL;
+  intern->alpn = zend_string_init(QUIC_CLIENT_DEFAULT_ALPN, sizeof(QUIC_CLIENT_DEFAULT_ALPN) - 1, 0);
+  intern->server_name = NULL;
+  intern->cafile = NULL;
+  intern->capath = NULL;
+  intern->verify_peer = true;
+  intern->started = false;
+  intern->handshake_complete = false;
   intern->local_addrlen = 0;
   intern->peer_addrlen = 0;
+  intern->cred = NULL;
+  intern->session = NULL;
+  intern->conn = NULL;
+  ngtcp2_ccerr_default(&intern->last_error);
 
   zend_object_std_init(&intern->std, class_type);
   object_properties_init(&intern->std, class_type);
@@ -337,6 +993,10 @@ PHP_METHOD(Quic_ClientConnection, __construct)
   intern->host = zend_string_copy(host);
   intern->port = port;
 
+  if (!quic_client_apply_options(intern, options)) {
+    RETURN_THROWS();
+  }
+
   if (!quic_client_connect_socket(intern, host, port)) {
     RETURN_THROWS();
   }
@@ -376,8 +1036,24 @@ PHP_METHOD(Quic_ClientConnection, getStream)
 
 PHP_METHOD(Quic_ClientConnection, startHandshake)
 {
-  quic_throw_not_implemented("Quic\\ClientConnection::startHandshake");
-  RETURN_THROWS();
+  quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
+
+  if (intern->fd < 0) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Connection is closed");
+    RETURN_THROWS();
+  }
+
+  if (intern->started) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Handshake has already been started");
+    RETURN_THROWS();
+  }
+
+  if (!quic_client_tls_init(intern) || !quic_client_quic_init(intern)) {
+    quic_client_reset_connection_state(intern);
+    RETURN_THROWS();
+  }
+
+  intern->started = true;
 }
 
 PHP_METHOD(Quic_ClientConnection, handleReadable)
@@ -394,18 +1070,49 @@ PHP_METHOD(Quic_ClientConnection, handleExpiry)
 
 PHP_METHOD(Quic_ClientConnection, flush)
 {
-  quic_throw_not_implemented("Quic\\ClientConnection::flush");
-  RETURN_THROWS();
+  quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
+
+  if (!intern->started || intern->conn == NULL) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Handshake has not been started");
+    RETURN_THROWS();
+  }
+
+  if (!quic_client_flush_packets(intern)) {
+    RETURN_THROWS();
+  }
 }
 
 PHP_METHOD(Quic_ClientConnection, getTimeout)
 {
-  RETURN_NULL();
+  quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
+  uint64_t now;
+  uint64_t expiry;
+  uint64_t delta_ms;
+
+  if (!intern->started || intern->conn == NULL) {
+    RETURN_NULL();
+  }
+
+  now = quic_client_timestamp();
+  if (EG(exception) != NULL) {
+    RETURN_THROWS();
+  }
+
+  expiry = ngtcp2_conn_get_expiry(intern->conn);
+  if (expiry <= now) {
+    RETURN_LONG(0);
+  }
+
+  delta_ms = (expiry - now) / NGTCP2_MILLISECONDS;
+
+  RETURN_LONG((zend_long) delta_ms);
 }
 
 PHP_METHOD(Quic_ClientConnection, isHandshakeComplete)
 {
-  RETURN_FALSE;
+  quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
+
+  RETURN_BOOL(intern->handshake_complete);
 }
 
 PHP_METHOD(Quic_ClientConnection, openBidirectionalStream)
@@ -432,6 +1139,8 @@ PHP_METHOD(Quic_ClientConnection, close)
   }
 
   (void) reason;
+
+  quic_client_reset_connection_state(intern);
 
   if (intern->fd >= 0) {
     close(intern->fd);
