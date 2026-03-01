@@ -29,6 +29,24 @@ php -d extension=/home/masakielastic/php-ext-quic/ext/modules/quic.so \
   127.0.0.1 18443 "ping\n"
 ```
 
+## Fiber client
+
+`examples/client_fiber_ping.php`
+
+Purpose:
+
+- connect to one QUIC server
+- drive QUIC state from inside a Fiber
+- suspend on poll-stream readiness or timeout and print the response
+
+Example:
+
+```bash
+php -d extension=/home/masakielastic/php-ext-quic/ext/modules/quic.so \
+  /home/masakielastic/php-ext-quic/examples/client_fiber_ping.php \
+  127.0.0.1 18443 "ping\n"
+```
+
 ## Single peer server
 
 `examples/server_loop.php`

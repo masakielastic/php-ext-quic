@@ -14,7 +14,7 @@ Current scope:
 - explicit handshake / readable / expiry / flush loop primitives
 - bidirectional stream open / read / write
 - server listener split into `Quic\ServerConnection` and `Quic\ServerPeer`
-- examples and integration scripts based on `stream_select()`
+- examples and integration scripts based on `stream_select()` and Fibers
 
 Current non-goals:
 
@@ -218,6 +218,7 @@ while (true) {
 ## Examples
 
 - [examples/client_ping.php](/home/masakielastic/php-ext-quic/examples/client_ping.php)
+- [examples/client_fiber_ping.php](/home/masakielastic/php-ext-quic/examples/client_fiber_ping.php)
 - [examples/server_loop.php](/home/masakielastic/php-ext-quic/examples/server_loop.php)
 - [examples/server_multi_peer_loop.php](/home/masakielastic/php-ext-quic/examples/server_multi_peer_loop.php)
 - [examples/run_multi_peer_demo.php](/home/masakielastic/php-ext-quic/examples/run_multi_peer_demo.php)

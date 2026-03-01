@@ -381,7 +381,7 @@ Deliverable:
 
 - PHPT tests for constructors, option validation, and state errors
 - integration tests using the shipped sample C binaries or local PHP examples
-- examples for `stream_select()`-driven client/server loops
+- examples for `stream_select()`-driven and Fiber-driven client/server loops
 
 Deliverable:
 

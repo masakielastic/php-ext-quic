@@ -89,6 +89,15 @@ while (true) {
 }
 ```
 
+## Fiber client shape
+
+The same primitives also work with a Fiber-based scheduler. The inner Fiber can
+own QUIC state transitions while the outer loop waits on `getPollStream()` and
+resumes the Fiber with either a readability or timeout event.
+
+See `examples/client_fiber_ping.php` for a minimal runnable version of this
+pattern.
+
 ## Server loop shape
 
 ```php
@@ -162,6 +171,7 @@ while (true) {
 The repository contains runnable examples:
 
 - `examples/client_ping.php`
+- `examples/client_fiber_ping.php`
 - `examples/server_loop.php`
 - `examples/server_multi_peer_loop.php`
 - `examples/run_multi_peer_demo.php`
