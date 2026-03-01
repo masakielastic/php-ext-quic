@@ -82,6 +82,38 @@ php -d extension=/home/masakielastic/php-ext-quic/ext/modules/quic.so \
   /tmp/nghttp3-localhost.crt /tmp/nghttp3-localhost.key
 ```
 
+## Integration runners
+
+The direct integration scripts under `ext/tests/` are useful when you want the
+same logic that backs the PHPT integration tests without going through
+`run-tests.php`.
+
+`ext/tests/server_client_integration.php`
+
+- single client and single server peer
+- uses the preferred `ServerPeer` acceptance path
+
+`ext/tests/server_listener_compat_integration.php`
+
+- single client and single server peer
+- intentionally exercises the listener-level compatibility helpers
+
+`ext/tests/server_multi_client_integration.php`
+
+- one listener serving two clients in sequence
+- uses `ServerPeer::popAcceptedStream()`
+
+`ext/tests/server_peer_close_integration.php`
+
+- closes the first accepted peer
+- verifies that the listener can still accept and serve the next peer
+
+`ext/tests/server_stream_queue_order_integration.php`
+
+- opens two streams on one peer
+- verifies that listener-level and peer-level accepted stream queues expose the
+  same order
+
 ## Notes
 
 - `client_ping.php` is intentionally tolerant of `ERR_CLOSING` and
