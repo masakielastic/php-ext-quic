@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <gnutls/crypto.h>
 #include <gnutls/gnutls.h>
+#include <inttypes.h>
 #include <netdb.h>
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
@@ -27,7 +28,7 @@
 
 #define QUIC_CLIENT_DEFAULT_ALPN "hq-interop"
 
-typedef struct _quic_client_connection_object {
+struct _quic_client_connection_object {
   php_socket_t fd;
   zend_string *host;
   zend_string *port;
@@ -47,8 +48,9 @@ typedef struct _quic_client_connection_object {
   gnutls_session_t session;
   ngtcp2_conn *conn;
   ngtcp2_ccerr last_error;
+  HashTable streams;
   zend_object std;
-} quic_client_connection_object;
+};
 
 zend_class_entry *quic_client_connection_ce;
 
@@ -66,6 +68,59 @@ static inline quic_client_connection_object *quic_client_connection_from_obj(zen
 
 #define Z_QUIC_CLIENT_CONNECTION_P(zv) \
   quic_client_connection_from_obj(Z_OBJ_P((zv)))
+
+static size_t quic_client_stream_key(char *buffer, size_t buffer_len, int64_t stream_id)
+{
+  return (size_t) snprintf(buffer, buffer_len, "%" PRId64, stream_id);
+}
+
+static quic_stream_state *quic_client_find_stream_state(
+  quic_client_connection_object *intern,
+  int64_t stream_id
+)
+{
+  char key[32];
+  size_t key_len;
+
+  key_len = quic_client_stream_key(key, sizeof(key), stream_id);
+
+  return zend_hash_str_find_ptr(&intern->streams, key, key_len);
+}
+
+static bool quic_client_register_stream_state(
+  quic_client_connection_object *intern,
+  quic_stream_state *state
+)
+{
+  char key[32];
+  size_t key_len;
+
+  key_len = quic_client_stream_key(key, sizeof(key), state->stream_id);
+
+  quic_stream_state_addref(state);
+  if (zend_hash_str_update_ptr(&intern->streams, key, key_len, state) == NULL) {
+    quic_stream_state_release(state);
+    zend_throw_exception_ex(quic_exception_ce, 0, "Failed to register stream state");
+    return false;
+  }
+
+  return true;
+}
+
+static quic_stream_state *quic_client_get_next_writable_stream(
+  quic_client_connection_object *intern
+)
+{
+  quic_stream_state *state;
+
+  ZEND_HASH_FOREACH_PTR(&intern->streams, state) {
+    if (quic_stream_state_has_pending_write(state)) {
+      return state;
+    }
+  } ZEND_HASH_FOREACH_END();
+
+  return NULL;
+}
 
 static bool quic_client_fill_random(void *dest, size_t destlen)
 {
@@ -165,8 +220,73 @@ static int quic_client_handshake_completed_cb(ngtcp2_conn *conn, void *user_data
   return 0;
 }
 
+static int quic_client_stream_close_cb(
+  ngtcp2_conn *conn,
+  uint32_t flags,
+  int64_t stream_id,
+  uint64_t app_error_code,
+  void *user_data,
+  void *stream_user_data
+)
+{
+  quic_client_connection_object *intern = user_data;
+  quic_stream_state *state = stream_user_data;
+
+  (void) conn;
+  (void) flags;
+  (void) app_error_code;
+
+  if (state == NULL) {
+    state = quic_client_find_stream_state(intern, stream_id);
+  }
+
+  if (state != NULL) {
+    quic_stream_state_mark_closed(state);
+  }
+
+  return 0;
+}
+
+static int quic_client_recv_stream_data_cb(
+  ngtcp2_conn *conn,
+  uint32_t flags,
+  int64_t stream_id,
+  uint64_t offset,
+  const uint8_t *data,
+  size_t datalen,
+  void *user_data,
+  void *stream_user_data
+)
+{
+  quic_client_connection_object *intern = user_data;
+  quic_stream_state *state = stream_user_data;
+
+  (void) conn;
+  (void) offset;
+
+  if (state == NULL) {
+    state = quic_client_find_stream_state(intern, stream_id);
+  }
+
+  if (state == NULL) {
+    return 0;
+  }
+
+  if (datalen > 0 && !quic_stream_state_append_read(state, data, datalen)) {
+    return NGTCP2_ERR_CALLBACK_FAILURE;
+  }
+
+  if (flags & NGTCP2_STREAM_DATA_FLAG_FIN) {
+    quic_stream_state_mark_peer_fin(state);
+  }
+
+  return 0;
+}
+
 static void quic_client_reset_connection_state(quic_client_connection_object *intern)
 {
+  quic_stream_state *state;
+
   if (intern->conn != NULL) {
     ngtcp2_conn_del(intern->conn);
     intern->conn = NULL;
@@ -181,6 +301,12 @@ static void quic_client_reset_connection_state(quic_client_connection_object *in
     gnutls_certificate_free_credentials(intern->cred);
     intern->cred = NULL;
   }
+
+  ZEND_HASH_FOREACH_PTR(&intern->streams, state) {
+    quic_stream_state_detach(state);
+    quic_stream_state_release(state);
+  } ZEND_HASH_FOREACH_END();
+  zend_hash_clean(&intern->streams);
 
   intern->started = false;
   intern->handshake_complete = false;
@@ -647,6 +773,8 @@ static bool quic_client_quic_init(quic_client_connection_object *intern)
     .encrypt = ngtcp2_crypto_encrypt_cb,
     .decrypt = ngtcp2_crypto_decrypt_cb,
     .hp_mask = ngtcp2_crypto_hp_mask_cb,
+    .recv_stream_data = quic_client_recv_stream_data_cb,
+    .stream_close = quic_client_stream_close_cb,
     .recv_retry = ngtcp2_crypto_recv_retry_cb,
     .rand = quic_client_rand_cb,
     .get_new_connection_id = quic_client_get_new_connection_id_cb,
@@ -749,10 +877,6 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
 {
   ngtcp2_path_storage path_storage;
   ngtcp2_pkt_info packet_info;
-  ngtcp2_vec datav = {
-    .base = NULL,
-    .len = 0,
-  };
   uint8_t buffer[1452];
   uint64_t now;
 
@@ -764,8 +888,31 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
   ngtcp2_path_storage_zero(&path_storage);
 
   for (;;) {
+    quic_stream_state *state;
+    ngtcp2_vec datav = {
+      .base = NULL,
+      .len = 0,
+    };
+    int64_t stream_id = -1;
+    uint32_t flags = NGTCP2_WRITE_STREAM_FLAG_MORE;
     ngtcp2_ssize nwrite;
     ngtcp2_ssize data_written = 0;
+    bool fin_attempted = false;
+
+    state = quic_client_get_next_writable_stream(intern);
+    if (state != NULL) {
+      stream_id = state->stream_id;
+
+      if (state->write_buffer_off < state->write_buffer_len) {
+        datav.base = state->write_buffer + state->write_buffer_off;
+        datav.len = state->write_buffer_len - state->write_buffer_off;
+      }
+
+      if (state->fin_requested && !state->fin_sent) {
+        flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
+        fin_attempted = true;
+      }
+    }
 
     nwrite = ngtcp2_conn_writev_stream(
       intern->conn,
@@ -774,15 +921,23 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
       buffer,
       sizeof(buffer),
       &data_written,
-      NGTCP2_WRITE_STREAM_FLAG_MORE,
-      -1,
+      flags,
+      stream_id,
       &datav,
-      0,
+      stream_id >= 0 ? 1 : 0,
       now
     );
 
     if (nwrite < 0) {
       if (nwrite == NGTCP2_ERR_WRITE_MORE) {
+        if (state != NULL) {
+          quic_stream_state_mark_write_progress(
+            state,
+            (size_t) data_written,
+            fin_attempted,
+            false
+          );
+        }
         continue;
       }
 
@@ -798,6 +953,15 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
 
     if (nwrite == 0) {
       return true;
+    }
+
+    if (state != NULL) {
+      quic_stream_state_mark_write_progress(
+        state,
+        (size_t) data_written,
+        fin_attempted,
+        true
+      );
     }
 
     if (!quic_client_send_packet(intern, buffer, (size_t) nwrite)) {
@@ -1015,6 +1179,7 @@ static void quic_client_connection_free_object(zend_object *object)
     intern->capath = NULL;
   }
 
+  zend_hash_destroy(&intern->streams);
   zend_object_std_dtor(&intern->std);
 }
 
@@ -1039,6 +1204,7 @@ static zend_object *quic_client_connection_create_object(zend_class_entry *class
   intern->session = NULL;
   intern->conn = NULL;
   ngtcp2_ccerr_default(&intern->last_error);
+  zend_hash_init(&intern->streams, 8, NULL, NULL, 0);
 
   zend_object_std_init(&intern->std, class_type);
   object_properties_init(&intern->std, class_type);
@@ -1249,8 +1415,43 @@ PHP_METHOD(Quic_ClientConnection, isHandshakeComplete)
 
 PHP_METHOD(Quic_ClientConnection, openBidirectionalStream)
 {
-  quic_throw_not_implemented("Quic\\ClientConnection::openBidirectionalStream");
-  RETURN_THROWS();
+  quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
+  quic_stream_state *state;
+  int64_t stream_id;
+  int rv;
+
+  if (!intern->started || intern->conn == NULL) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Handshake has not been started");
+    RETURN_THROWS();
+  }
+
+  if (!intern->handshake_complete) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Handshake is not complete");
+    RETURN_THROWS();
+  }
+
+  state = quic_stream_state_create(intern, -1);
+  rv = ngtcp2_conn_open_bidi_stream(intern->conn, &stream_id, state);
+  if (rv != 0) {
+    quic_stream_state_release(state);
+    zend_throw_exception_ex(
+      quic_protocol_exception_ce,
+      rv,
+      "ngtcp2_conn_open_bidi_stream() failed: %s",
+      ngtcp2_strerror(rv)
+    );
+    RETURN_THROWS();
+  }
+
+  state->stream_id = stream_id;
+
+  if (!quic_client_register_stream_state(intern, state)) {
+    ngtcp2_conn_set_stream_user_data(intern->conn, stream_id, NULL);
+    quic_stream_state_release(state);
+    RETURN_THROWS();
+  }
+
+  quic_stream_object_init(return_value, state);
 }
 
 PHP_METHOD(Quic_ClientConnection, close)
