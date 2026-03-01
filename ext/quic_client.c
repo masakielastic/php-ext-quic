@@ -970,6 +970,59 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
   }
 }
 
+static bool quic_client_write_connection_close_packet(
+  quic_client_connection_object *intern,
+  const ngtcp2_ccerr *ccerr
+)
+{
+  ngtcp2_path_storage path_storage;
+  ngtcp2_pkt_info packet_info;
+  uint8_t buffer[NGTCP2_MAX_UDP_PAYLOAD_SIZE];
+  ngtcp2_ssize nwrite;
+  uint64_t now;
+
+  if (intern->conn == NULL) {
+    return true;
+  }
+
+  if (ngtcp2_conn_in_closing_period(intern->conn) ||
+      ngtcp2_conn_in_draining_period(intern->conn)) {
+    return true;
+  }
+
+  now = quic_client_timestamp();
+  if (EG(exception) != NULL) {
+    return false;
+  }
+
+  ngtcp2_path_storage_zero(&path_storage);
+
+  nwrite = ngtcp2_conn_write_connection_close(
+    intern->conn,
+    &path_storage.path,
+    &packet_info,
+    buffer,
+    sizeof(buffer),
+    ccerr,
+    now
+  );
+  if (nwrite < 0) {
+    zend_throw_exception_ex(
+      quic_protocol_exception_ce,
+      (int) nwrite,
+      "ngtcp2_conn_write_connection_close() failed: %s",
+      ngtcp2_strerror((int) nwrite)
+    );
+    return false;
+  }
+
+  if (nwrite == 0) {
+    return true;
+  }
+
+  return quic_client_send_packet(intern, buffer, (size_t) nwrite);
+}
+
 static bool quic_client_record_protocol_error(quic_client_connection_object *intern, int rv)
 {
   if (!intern->last_error.error_code) {
@@ -1459,6 +1512,8 @@ PHP_METHOD(Quic_ClientConnection, close)
   quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
   zval *error_code = NULL;
   zend_string *reason = NULL;
+  ngtcp2_ccerr ccerr;
+  bool ok = true;
 
   ZEND_PARSE_PARAMETERS_START(0, 2)
     Z_PARAM_OPTIONAL
@@ -1471,13 +1526,37 @@ PHP_METHOD(Quic_ClientConnection, close)
     RETURN_THROWS();
   }
 
-  (void) reason;
+  ngtcp2_ccerr_default(&ccerr);
+
+  if (error_code != NULL && Z_TYPE_P(error_code) == IS_LONG) {
+    ngtcp2_ccerr_set_application_error(
+      &ccerr,
+      (uint64_t) Z_LVAL_P(error_code),
+      reason != NULL ? (const uint8_t *) ZSTR_VAL(reason) : NULL,
+      reason != NULL ? ZSTR_LEN(reason) : 0
+    );
+  } else if (reason != NULL && ZSTR_LEN(reason) > 0) {
+    ngtcp2_ccerr_set_transport_error(
+      &ccerr,
+      NGTCP2_NO_ERROR,
+      (const uint8_t *) ZSTR_VAL(reason),
+      ZSTR_LEN(reason)
+    );
+  }
+
+  if (intern->started && intern->conn != NULL) {
+    ok = quic_client_write_connection_close_packet(intern, &ccerr);
+  }
 
   quic_client_reset_connection_state(intern);
 
   if (intern->fd >= 0) {
     close(intern->fd);
     intern->fd = -1;
+  }
+
+  if (!ok) {
+    RETURN_THROWS();
   }
 }
 
