@@ -61,14 +61,16 @@ static bool quic_stream_buffer_append(
 }
 
 quic_stream_state *quic_stream_state_create(
-  quic_client_connection_object *client,
+  quic_stream_owner_kind owner_kind,
+  void *owner,
   int64_t stream_id
 )
 {
   quic_stream_state *state;
 
   state = ecalloc(1, sizeof(quic_stream_state));
-  state->client = client;
+  state->owner_kind = owner_kind;
+  state->owner = owner;
   state->stream_id = stream_id;
   state->refcount = 1;
 
@@ -167,7 +169,8 @@ void quic_stream_state_mark_closed(quic_stream_state *state)
 
 void quic_stream_state_detach(quic_stream_state *state)
 {
-  state->client = NULL;
+  state->owner = NULL;
+  state->owner_kind = QUIC_STREAM_OWNER_NONE;
   state->closed = true;
 }
 
@@ -244,7 +247,7 @@ PHP_METHOD(Quic_Stream, write)
     RETURN_THROWS();
   }
 
-  if (intern->state->closed || intern->state->client == NULL) {
+  if (intern->state->closed || intern->state->owner == NULL) {
     zend_throw_exception_ex(quic_exception_ce, 0, "Stream is closed");
     RETURN_THROWS();
   }
@@ -298,7 +301,7 @@ PHP_METHOD(Quic_Stream, isWritable)
 
   RETURN_BOOL(
     !intern->state->closed &&
-    intern->state->client != NULL &&
+    intern->state->owner != NULL &&
     !intern->state->fin_requested
   );
 }
@@ -314,7 +317,7 @@ PHP_METHOD(Quic_Stream, close)
 {
   quic_stream_object *intern = Z_QUIC_STREAM_P(ZEND_THIS);
 
-  if (intern->state->closed || intern->state->client == NULL) {
+  if (intern->state->closed || intern->state->owner == NULL) {
     return;
   }
 

@@ -3,7 +3,7 @@
 $server = new Quic\ServerConnection('127.0.0.1', 0, [
     'certfile' => '/tmp/nghttp3-localhost.crt',
     'keyfile' => '/tmp/nghttp3-localhost.key',
-    'response' => "server response\n",
+    'response' => null,
 ]);
 
 $client = new Quic\ClientConnection('127.0.0.1', $server->getLocalAddress()['port'], [
@@ -15,6 +15,8 @@ $clientStream = $client->getStream();
 $client->startHandshake();
 
 $opened = false;
+$accepted = false;
+$serverRequest = '';
 $body = '';
 $deadline = microtime(true) + 5.0;
 
@@ -22,10 +24,29 @@ while (microtime(true) < $deadline) {
     $client->flush();
     $server->flush();
 
+    if (!$accepted) {
+        $serverSideStream = $server->popAcceptedStream();
+        if ($serverSideStream instanceof Quic\Stream) {
+            $accepted = true;
+        }
+    }
+
     if ($client->isHandshakeComplete() && !$opened) {
         $stream = $client->openBidirectionalStream();
         $stream->write("ping\n", true);
         $opened = true;
+    }
+
+    if ($accepted) {
+        $chunk = $serverSideStream->read();
+        if ($chunk !== '') {
+            $serverRequest .= $chunk;
+        }
+
+        if ($serverSideStream->isFinished() && $serverSideStream->isWritable()) {
+            $serverSideStream->write("server response\n", true);
+            $server->flush();
+        }
     }
 
     if ($opened) {
@@ -73,6 +94,8 @@ while (microtime(true) < $deadline) {
 var_dump($server->isHandshakeComplete());
 var_dump($client->isHandshakeComplete());
 var_dump($opened);
+var_dump($accepted);
+var_dump($serverRequest);
 var_dump($body);
 
 fclose($serverStream);

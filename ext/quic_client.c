@@ -1483,7 +1483,7 @@ PHP_METHOD(Quic_ClientConnection, openBidirectionalStream)
     RETURN_THROWS();
   }
 
-  state = quic_stream_state_create(intern, -1);
+  state = quic_stream_state_create(QUIC_STREAM_OWNER_CLIENT, intern, -1);
   rv = ngtcp2_conn_open_bidi_stream(intern->conn, &stream_id, state);
   if (rv != 0) {
     quic_stream_state_release(state);

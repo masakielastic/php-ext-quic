@@ -89,5 +89,8 @@ echo $stdout;
 bool(true)
 bool(true)
 bool(true)
+bool(true)
+string(5) "ping
+"
 string(16) "server response
 "

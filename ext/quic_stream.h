@@ -2,12 +2,18 @@
 #define PHP_QUIC_STREAM_H
 
 #include "php_quic.h"
-#include "quic_client.h"
 
 #include <stdbool.h>
 
+typedef enum _quic_stream_owner_kind {
+  QUIC_STREAM_OWNER_NONE = 0,
+  QUIC_STREAM_OWNER_CLIENT = 1,
+  QUIC_STREAM_OWNER_SERVER = 2,
+} quic_stream_owner_kind;
+
 typedef struct _quic_stream_state {
-  quic_client_connection_object *client;
+  quic_stream_owner_kind owner_kind;
+  void *owner;
   int64_t stream_id;
   uint8_t *read_buffer;
   size_t read_buffer_len;
@@ -26,7 +32,8 @@ typedef struct _quic_stream_state {
 extern zend_class_entry *quic_stream_ce;
 
 quic_stream_state *quic_stream_state_create(
-  quic_client_connection_object *client,
+  quic_stream_owner_kind owner_kind,
+  void *owner,
   int64_t stream_id
 );
 void quic_stream_state_addref(quic_stream_state *state);
