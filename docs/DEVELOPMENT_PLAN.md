@@ -7,7 +7,8 @@ Provide a PHP extension that exposes minimal QUIC client/server classes built on
 PHP streams and Fibers.
 
 The first milestone should stay intentionally small and mirror the behavior in
-`sample_client.c` and `sample_server.c`:
+the in-tree `sample_server.c` reference and the minimal loop-driven client/server
+flows already covered by the extension tests:
 
 - QUIC v1 over UDP
 - TLS 1.3 via GnuTLS
@@ -47,8 +48,8 @@ Related guides:
   - `gtlsclient`
   - `/usr/sbin/gtlsserver`
 - Reference behavior comes from:
-  - `sample_client.c`
   - `sample_server.c`
+  - the local PHP integration scripts under `ext/tests/`
 - Minimum PHP version should be `8.1` because Fiber-based loops are a target.
 
 ## Design principles
@@ -278,14 +279,14 @@ Internal responsibilities:
 
 ## Mapping from reference samples to extension features
 
-From `sample_client.c`:
+For the client side:
 
 - socket creation and `connect()` become client constructor internals
 - `ngtcp2_conn_client_new()` maps to `startHandshake()`
 - `extend_max_local_streams_bidi` informs `openBidirectionalStream()`
-- `client_read()` maps to `handleReadable()`
-- `client_handle_expiry()` maps to `handleExpiry()`
-- `client_write_streams()` maps to `flush()`
+- packet reads map to `handleReadable()`
+- expiry handling maps to `handleExpiry()`
+- stream and handshake writes map to `flush()`
 
 From `sample_server.c`:
 
@@ -361,8 +362,8 @@ Deliverable:
 
 Deliverable:
 
-- PHP client can complete QUIC handshake against `sample_server.c` server or
-  `/usr/sbin/gtlsserver` if configured appropriately
+- PHP client can complete QUIC handshake against `sample_server.c` or the local
+  PHP server example
 
 ### Phase 2: minimal stream support
 
@@ -410,7 +411,6 @@ Deliverable:
 ### Integration tests
 
 - PHP client -> reference `sample_server.c`
-- reference `sample_client.c` -> PHP server
 - PHP client -> PHP server
 - certificate verification with explicit CA file
 

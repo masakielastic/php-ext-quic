@@ -1,6 +1,6 @@
 {
   "name": "masakielastic/quic",
-  "description": "Minimal QUIC client/server PHP extension powered by ngtcp2 and GnuTLS",
+  "description": "Minimal QUIC client/server PHP extension for event-loop integration, powered by ngtcp2 and GnuTLS",
   "version": "0.1.0",
   "type": "php-ext",
   "license": "MIT",
@@ -14,7 +14,11 @@
     "php-ext",
     "quic",
     "ngtcp2",
-    "gnutls"
+    "gnutls",
+    "event-loop",
+    "stream",
+    "fiber",
+    "server-peer"
   ],
   "php-ext": {
     "extension-name": "quic",
