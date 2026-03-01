@@ -9,26 +9,60 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <gnutls/crypto.h>
+#include <gnutls/gnutls.h>
+#include <inttypes.h>
 #include <netdb.h>
+#include <ngtcp2/ngtcp2.h>
+#include <ngtcp2/ngtcp2_crypto.h>
+#include <ngtcp2/ngtcp2_crypto_gnutls.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
+
+#define QUIC_SERVER_DEFAULT_ALPN "hq-interop"
+#define QUIC_SERVER_DEFAULT_CERT_FILE "/tmp/nghttp3-localhost.crt"
+#define QUIC_SERVER_DEFAULT_KEY_FILE "/tmp/nghttp3-localhost.key"
+#define QUIC_SERVER_DEFAULT_RESPONSE "server response\n"
 
 struct _quic_server_connection_object {
   php_socket_t fd;
   zend_string *host;
   zend_string *port;
+  zend_string *alpn;
+  zend_string *certfile;
+  zend_string *keyfile;
+  zend_string *response;
+  bool started;
+  bool handshake_complete;
   struct sockaddr_storage local_addr;
   socklen_t local_addrlen;
+  struct sockaddr_storage peer_addr;
+  socklen_t peer_addrlen;
+  ngtcp2_crypto_conn_ref conn_ref;
+  gnutls_certificate_credentials_t cred;
+  gnutls_session_t session;
+  ngtcp2_conn *conn;
+  ngtcp2_ccerr last_error;
+  struct {
+    int64_t stream_id;
+    size_t nwrite;
+  } tx_stream;
   zend_object std;
 };
 
 zend_class_entry *quic_server_connection_ce;
 
 static zend_object_handlers quic_server_connection_handlers;
+
+static const char quic_server_tls_priority[] =
+  "NORMAL:-VERS-ALL:+VERS-TLS1.3:-CIPHER-ALL:+AES-128-GCM:+AES-256-GCM:"
+  "+CHACHA20-POLY1305:+AES-128-CCM:-GROUP-ALL:+GROUP-SECP256R1:+GROUP-X25519:"
+  "+GROUP-SECP384R1:+GROUP-SECP521R1:%DISABLE_TLS13_COMPAT_MODE";
 
 static inline quic_server_connection_object *quic_server_connection_from_obj(zend_object *object)
 {
@@ -37,6 +71,175 @@ static inline quic_server_connection_object *quic_server_connection_from_obj(zen
 
 #define Z_QUIC_SERVER_CONNECTION_P(zv) \
   quic_server_connection_from_obj(Z_OBJ_P((zv)))
+
+static uint64_t quic_server_timestamp(void)
+{
+  struct timespec tp;
+
+  if (clock_gettime(CLOCK_MONOTONIC, &tp) != 0) {
+    zend_throw_exception_ex(
+      quic_exception_ce,
+      errno,
+      "clock_gettime() failed: %s",
+      strerror(errno)
+    );
+    return 0;
+  }
+
+  return (uint64_t) tp.tv_sec * NGTCP2_SECONDS + (uint64_t) tp.tv_nsec;
+}
+
+static bool quic_server_fill_random(void *dest, size_t destlen)
+{
+  int rv = gnutls_rnd(GNUTLS_RND_RANDOM, dest, destlen);
+
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_rnd() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  return true;
+}
+
+static ngtcp2_conn *quic_server_get_conn(ngtcp2_crypto_conn_ref *conn_ref)
+{
+  quic_server_connection_object *intern = conn_ref->user_data;
+  return intern->conn;
+}
+
+static void quic_server_rand_cb(uint8_t *dest, size_t destlen, const ngtcp2_rand_ctx *rand_ctx)
+{
+  (void) rand_ctx;
+
+  if (!quic_server_fill_random(dest, destlen)) {
+    abort();
+  }
+}
+
+static int quic_server_get_new_connection_id_cb(
+  ngtcp2_conn *conn,
+  ngtcp2_cid *cid,
+  uint8_t *token,
+  size_t cidlen,
+  void *user_data
+)
+{
+  (void) conn;
+  (void) user_data;
+
+  if (!quic_server_fill_random(cid->data, cidlen)) {
+    return NGTCP2_ERR_CALLBACK_FAILURE;
+  }
+  cid->datalen = cidlen;
+
+  if (!quic_server_fill_random(token, NGTCP2_STATELESS_RESET_TOKENLEN)) {
+    return NGTCP2_ERR_CALLBACK_FAILURE;
+  }
+
+  return 0;
+}
+
+static bool quic_server_is_client_bidi_stream(int64_t stream_id)
+{
+  return (stream_id & 0x3) == 0;
+}
+
+static int quic_server_handshake_completed_cb(ngtcp2_conn *conn, void *user_data)
+{
+  quic_server_connection_object *intern = user_data;
+
+  (void) conn;
+
+  intern->handshake_complete = true;
+
+  return 0;
+}
+
+static int quic_server_stream_open_cb(ngtcp2_conn *conn, int64_t stream_id, void *user_data)
+{
+  (void) conn;
+  (void) stream_id;
+  (void) user_data;
+
+  return 0;
+}
+
+static int quic_server_stream_close_cb(
+  ngtcp2_conn *conn,
+  uint32_t flags,
+  int64_t stream_id,
+  uint64_t app_error_code,
+  void *user_data,
+  void *stream_user_data
+)
+{
+  quic_server_connection_object *intern = user_data;
+
+  (void) conn;
+  (void) flags;
+  (void) app_error_code;
+  (void) stream_user_data;
+
+  if (intern->tx_stream.stream_id == stream_id) {
+    intern->tx_stream.stream_id = -1;
+    intern->tx_stream.nwrite = 0;
+  }
+
+  return 0;
+}
+
+static int quic_server_recv_stream_data_cb(
+  ngtcp2_conn *conn,
+  uint32_t flags,
+  int64_t stream_id,
+  uint64_t offset,
+  const uint8_t *data,
+  size_t datalen,
+  void *user_data,
+  void *stream_user_data
+)
+{
+  quic_server_connection_object *intern = user_data;
+
+  (void) conn;
+  (void) offset;
+  (void) data;
+  (void) datalen;
+  (void) stream_user_data;
+
+  if ((flags & NGTCP2_STREAM_DATA_FLAG_FIN) &&
+      quic_server_is_client_bidi_stream(stream_id) &&
+      intern->response != NULL) {
+    intern->tx_stream.stream_id = stream_id;
+    intern->tx_stream.nwrite = 0;
+  }
+
+  return 0;
+}
+
+static int quic_server_acked_stream_data_offset_cb(
+  ngtcp2_conn *conn,
+  int64_t stream_id,
+  uint64_t offset,
+  uint64_t datalen,
+  void *user_data,
+  void *stream_user_data
+)
+{
+  (void) conn;
+  (void) stream_id;
+  (void) offset;
+  (void) datalen;
+  (void) user_data;
+  (void) stream_user_data;
+
+  return 0;
+}
 
 static zend_string *quic_server_port_to_string(zval *port)
 {
@@ -69,6 +272,82 @@ static zend_string *quic_server_port_to_string(zval *port)
 
   zend_argument_type_error(2, "must be of type string|int");
   return NULL;
+}
+
+static zend_string *quic_server_get_string_option(HashTable *options, const char *key)
+{
+  zval *value = zend_hash_str_find(options, key, strlen(key));
+
+  if (value == NULL || Z_TYPE_P(value) == IS_NULL) {
+    return NULL;
+  }
+
+  if (Z_TYPE_P(value) != IS_STRING) {
+    zend_type_error("Option \"%s\" must be of type ?string", key);
+    return NULL;
+  }
+
+  return zend_string_copy(Z_STR_P(value));
+}
+
+static bool quic_server_apply_options(quic_server_connection_object *intern, HashTable *options)
+{
+  zval *value;
+
+  intern->alpn = quic_server_get_string_option(options, "alpn");
+  if (EG(exception) != NULL) {
+    return false;
+  }
+  if (intern->alpn == NULL) {
+    intern->alpn = zend_string_init(QUIC_SERVER_DEFAULT_ALPN, sizeof(QUIC_SERVER_DEFAULT_ALPN) - 1, 0);
+  }
+
+  intern->certfile = quic_server_get_string_option(options, "certfile");
+  if (EG(exception) != NULL) {
+    return false;
+  }
+  if (intern->certfile == NULL) {
+    intern->certfile = zend_string_init(
+      QUIC_SERVER_DEFAULT_CERT_FILE,
+      sizeof(QUIC_SERVER_DEFAULT_CERT_FILE) - 1,
+      0
+    );
+  }
+
+  intern->keyfile = quic_server_get_string_option(options, "keyfile");
+  if (EG(exception) != NULL) {
+    return false;
+  }
+  if (intern->keyfile == NULL) {
+    intern->keyfile = zend_string_init(
+      QUIC_SERVER_DEFAULT_KEY_FILE,
+      sizeof(QUIC_SERVER_DEFAULT_KEY_FILE) - 1,
+      0
+    );
+  }
+
+  value = zend_hash_str_find(options, "response", sizeof("response") - 1);
+  if (value == NULL) {
+    intern->response = zend_string_init(
+      QUIC_SERVER_DEFAULT_RESPONSE,
+      sizeof(QUIC_SERVER_DEFAULT_RESPONSE) - 1,
+      0
+    );
+    return true;
+  }
+
+  if (Z_TYPE_P(value) == IS_NULL) {
+    intern->response = NULL;
+    return true;
+  }
+
+  if (Z_TYPE_P(value) != IS_STRING) {
+    zend_type_error("Option \"response\" must be of type ?string");
+    return false;
+  }
+
+  intern->response = zend_string_copy(Z_STR_P(value));
+  return true;
 }
 
 static void quic_server_address_to_array(
@@ -156,6 +435,7 @@ static bool quic_server_bind_socket(quic_server_connection_object *intern)
   struct addrinfo *result = NULL;
   struct addrinfo *rp;
   const char *host;
+  int last_errno = 0;
   int rv;
 
   hints.ai_family = AF_UNSPEC;
@@ -190,6 +470,7 @@ static bool quic_server_bind_socket(quic_server_connection_object *intern)
     setsockopt(intern->fd, SOL_SOCKET, SO_REUSEADDR, (const void *) &optval, sizeof(optval));
 
     if (bind(intern->fd, rp->ai_addr, rp->ai_addrlen) < 0) {
+      last_errno = errno;
       close(intern->fd);
       intern->fd = -1;
       continue;
@@ -221,13 +502,672 @@ static bool quic_server_bind_socket(quic_server_connection_object *intern)
   }
 
   freeaddrinfo(result);
-  zend_throw_exception_ex(quic_exception_ce, 0, "Failed to bind UDP socket");
+  zend_throw_exception_ex(
+    quic_exception_ce,
+    last_errno,
+    "Failed to bind UDP socket%s%s",
+    last_errno != 0 ? ": " : "",
+    last_errno != 0 ? strerror(last_errno) : ""
+  );
   return false;
+}
+
+static bool quic_server_send_packet(quic_server_connection_object *intern, const uint8_t *data, size_t datalen)
+{
+  ssize_t nwrite;
+
+  do {
+    nwrite = send(intern->fd, data, datalen, 0);
+  } while (nwrite < 0 && errno == EINTR);
+
+  if (nwrite < 0) {
+    zend_throw_exception_ex(
+      quic_exception_ce,
+      errno,
+      "send() failed: %s",
+      strerror(errno)
+    );
+    return false;
+  }
+
+  if ((size_t) nwrite != datalen) {
+    zend_throw_exception_ex(
+      quic_exception_ce,
+      0,
+      "Short UDP send: %zd != %zu",
+      nwrite,
+      datalen
+    );
+    return false;
+  }
+
+  return true;
+}
+
+static bool quic_server_record_protocol_error(quic_server_connection_object *intern, int rv)
+{
+  if (!intern->last_error.error_code) {
+    if (rv == NGTCP2_ERR_CRYPTO) {
+      ngtcp2_ccerr_set_tls_alert(
+        &intern->last_error,
+        ngtcp2_conn_get_tls_alert(intern->conn),
+        NULL,
+        0
+      );
+    } else {
+      ngtcp2_ccerr_set_liberr(&intern->last_error, rv, NULL, 0);
+    }
+  }
+
+  zend_throw_exception_ex(
+    quic_protocol_exception_ce,
+    rv,
+    "%s",
+    ngtcp2_strerror(rv)
+  );
+
+  return false;
+}
+
+static void quic_server_reset_connection_state(quic_server_connection_object *intern)
+{
+  if (intern->conn != NULL) {
+    ngtcp2_conn_del(intern->conn);
+    intern->conn = NULL;
+  }
+
+  if (intern->session != NULL) {
+    gnutls_deinit(intern->session);
+    intern->session = NULL;
+  }
+
+  if (intern->cred != NULL) {
+    gnutls_certificate_free_credentials(intern->cred);
+    intern->cred = NULL;
+  }
+
+  intern->started = false;
+  intern->handshake_complete = false;
+  intern->peer_addrlen = 0;
+  intern->tx_stream.stream_id = -1;
+  intern->tx_stream.nwrite = 0;
+  ngtcp2_ccerr_default(&intern->last_error);
+}
+
+static bool quic_server_tls_init(quic_server_connection_object *intern)
+{
+  gnutls_datum_t alpn;
+  int rv;
+
+  rv = gnutls_certificate_allocate_credentials(&intern->cred);
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_certificate_allocate_credentials() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  rv = gnutls_certificate_set_x509_key_file(
+    intern->cred,
+    ZSTR_VAL(intern->certfile),
+    ZSTR_VAL(intern->keyfile),
+    GNUTLS_X509_FMT_PEM
+  );
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_certificate_set_x509_key_file() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  rv = gnutls_init(
+    &intern->session,
+    GNUTLS_SERVER | GNUTLS_ENABLE_EARLY_DATA |
+      GNUTLS_NO_AUTO_SEND_TICKET | GNUTLS_NO_END_OF_EARLY_DATA
+  );
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_init() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  rv = gnutls_priority_set_direct(intern->session, quic_server_tls_priority, NULL);
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_priority_set_direct() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  rv = ngtcp2_crypto_gnutls_configure_server_session(intern->session);
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "ngtcp2_crypto_gnutls_configure_server_session() failed"
+    );
+    return false;
+  }
+
+  rv = gnutls_credentials_set(intern->session, GNUTLS_CRD_CERTIFICATE, intern->cred);
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_credentials_set() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  alpn.data = (unsigned char *) ZSTR_VAL(intern->alpn);
+  alpn.size = (unsigned int) ZSTR_LEN(intern->alpn);
+  rv = gnutls_alpn_set_protocols(
+    intern->session,
+    &alpn,
+    1,
+    GNUTLS_ALPN_MANDATORY | GNUTLS_ALPN_SERVER_PRECEDENCE
+  );
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_tls_exception_ce,
+      rv,
+      "gnutls_alpn_set_protocols() failed: %s",
+      gnutls_strerror(rv)
+    );
+    return false;
+  }
+
+  intern->conn_ref.get_conn = quic_server_get_conn;
+  intern->conn_ref.user_data = intern;
+  gnutls_session_set_ptr(intern->session, &intern->conn_ref);
+  gnutls_handshake_set_timeout(intern->session, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
+
+  return true;
+}
+
+static bool quic_server_quic_init(
+  quic_server_connection_object *intern,
+  const ngtcp2_cid *client_dcid,
+  const ngtcp2_cid *client_scid,
+  uint32_t version
+)
+{
+  ngtcp2_callbacks callbacks = {
+    .recv_client_initial = ngtcp2_crypto_recv_client_initial_cb,
+    .recv_crypto_data = ngtcp2_crypto_recv_crypto_data_cb,
+    .handshake_completed = quic_server_handshake_completed_cb,
+    .encrypt = ngtcp2_crypto_encrypt_cb,
+    .decrypt = ngtcp2_crypto_decrypt_cb,
+    .hp_mask = ngtcp2_crypto_hp_mask_cb,
+    .recv_stream_data = quic_server_recv_stream_data_cb,
+    .acked_stream_data_offset = quic_server_acked_stream_data_offset_cb,
+    .stream_open = quic_server_stream_open_cb,
+    .stream_close = quic_server_stream_close_cb,
+    .rand = quic_server_rand_cb,
+    .get_new_connection_id = quic_server_get_new_connection_id_cb,
+    .update_key = ngtcp2_crypto_update_key_cb,
+    .delete_crypto_aead_ctx = ngtcp2_crypto_delete_crypto_aead_ctx_cb,
+    .delete_crypto_cipher_ctx = ngtcp2_crypto_delete_crypto_cipher_ctx_cb,
+    .get_path_challenge_data = ngtcp2_crypto_get_path_challenge_data_cb,
+    .version_negotiation = ngtcp2_crypto_version_negotiation_cb,
+  };
+  ngtcp2_settings settings;
+  ngtcp2_transport_params params;
+  ngtcp2_path path = {
+    .local = {
+      .addr = (struct sockaddr *) &intern->local_addr,
+      .addrlen = intern->local_addrlen,
+    },
+    .remote = {
+      .addr = (struct sockaddr *) &intern->peer_addr,
+      .addrlen = intern->peer_addrlen,
+    },
+  };
+  ngtcp2_cid scid;
+  int rv;
+
+  scid.datalen = 18;
+  if (!quic_server_fill_random(scid.data, scid.datalen)) {
+    return false;
+  }
+
+  ngtcp2_settings_default(&settings);
+  settings.initial_ts = quic_server_timestamp();
+  if (EG(exception) != NULL) {
+    return false;
+  }
+
+  ngtcp2_transport_params_default(&params);
+  params.initial_max_stream_data_bidi_local = 64 * 1024;
+  params.initial_max_stream_data_bidi_remote = 64 * 1024;
+  params.initial_max_stream_data_uni = 64 * 1024;
+  params.initial_max_data = 1024 * 1024;
+  params.initial_max_streams_bidi = 16;
+  params.initial_max_streams_uni = 16;
+  params.max_idle_timeout = 30 * NGTCP2_SECONDS;
+  params.active_connection_id_limit = 7;
+  params.stateless_reset_token_present = 1;
+  params.original_dcid = *client_dcid;
+  params.original_dcid_present = 1;
+
+  if (!quic_server_fill_random(params.stateless_reset_token, sizeof(params.stateless_reset_token))) {
+    return false;
+  }
+
+  rv = ngtcp2_conn_server_new(
+    &intern->conn,
+    client_scid,
+    &scid,
+    &path,
+    version,
+    &callbacks,
+    &settings,
+    &params,
+    NULL,
+    intern
+  );
+  if (rv != 0) {
+    zend_throw_exception_ex(
+      quic_protocol_exception_ce,
+      rv,
+      "ngtcp2_conn_server_new() failed: %s",
+      ngtcp2_strerror(rv)
+    );
+    return false;
+  }
+
+  ngtcp2_conn_set_tls_native_handle(intern->conn, intern->session);
+
+  return true;
+}
+
+static bool quic_server_get_response(
+  quic_server_connection_object *intern,
+  int64_t *stream_id,
+  bool *fin,
+  ngtcp2_vec *datav
+)
+{
+  if (intern->response != NULL &&
+      intern->tx_stream.stream_id != -1 &&
+      intern->tx_stream.nwrite < ZSTR_LEN(intern->response)) {
+    *stream_id = intern->tx_stream.stream_id;
+    *fin = true;
+    datav->base = (uint8_t *) ZSTR_VAL(intern->response) + intern->tx_stream.nwrite;
+    datav->len = ZSTR_LEN(intern->response) - intern->tx_stream.nwrite;
+    return true;
+  }
+
+  *stream_id = -1;
+  *fin = false;
+  datav->base = NULL;
+  datav->len = 0;
+  return false;
+}
+
+static bool quic_server_flush_packets(quic_server_connection_object *intern)
+{
+  ngtcp2_path_storage path_storage;
+  ngtcp2_pkt_info packet_info;
+  uint8_t buffer[1452];
+  uint64_t now;
+
+  if (intern->conn == NULL) {
+    return true;
+  }
+
+  now = quic_server_timestamp();
+  if (EG(exception) != NULL) {
+    return false;
+  }
+
+  ngtcp2_path_storage_zero(&path_storage);
+
+  for (;;) {
+    ngtcp2_vec datav = {
+      .base = NULL,
+      .len = 0,
+    };
+    int64_t stream_id = -1;
+    ngtcp2_ssize data_written = 0;
+    ngtcp2_ssize nwrite;
+    uint32_t flags = NGTCP2_WRITE_STREAM_FLAG_MORE;
+    bool fin = false;
+    bool has_response;
+
+    has_response = quic_server_get_response(intern, &stream_id, &fin, &datav);
+    if (fin) {
+      flags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
+    }
+
+    nwrite = ngtcp2_conn_writev_stream(
+      intern->conn,
+      &path_storage.path,
+      &packet_info,
+      buffer,
+      sizeof(buffer),
+      &data_written,
+      flags,
+      stream_id,
+      has_response ? &datav : NULL,
+      has_response ? 1 : 0,
+      now
+    );
+    if (nwrite < 0) {
+      if (nwrite == NGTCP2_ERR_WRITE_MORE) {
+        if (data_written > 0 && stream_id == intern->tx_stream.stream_id) {
+          intern->tx_stream.nwrite += (size_t) data_written;
+        }
+        continue;
+      }
+
+      ngtcp2_ccerr_set_liberr(&intern->last_error, (int) nwrite, NULL, 0);
+      zend_throw_exception_ex(
+        quic_protocol_exception_ce,
+        (int) nwrite,
+        "ngtcp2_conn_writev_stream() failed: %s",
+        ngtcp2_strerror((int) nwrite)
+      );
+      return false;
+    }
+
+    if (nwrite == 0) {
+      return true;
+    }
+
+    if (data_written > 0 && stream_id == intern->tx_stream.stream_id) {
+      intern->tx_stream.nwrite += (size_t) data_written;
+    }
+
+    if (!quic_server_send_packet(intern, buffer, (size_t) nwrite)) {
+      return false;
+    }
+  }
+}
+
+static bool quic_server_handle_connected_readable(quic_server_connection_object *intern)
+{
+  uint8_t buffer[65536];
+  ngtcp2_pkt_info packet_info = {0};
+
+  for (;;) {
+    ngtcp2_path path = {
+      .local = {
+        .addr = (struct sockaddr *) &intern->local_addr,
+        .addrlen = intern->local_addrlen,
+      },
+      .remote = {
+        .addr = (struct sockaddr *) &intern->peer_addr,
+        .addrlen = intern->peer_addrlen,
+      },
+    };
+    ssize_t nread;
+    uint64_t now;
+    int rv;
+
+    nread = recv(intern->fd, buffer, sizeof(buffer), 0);
+    if (nread < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return true;
+      }
+
+      if (errno == EINTR) {
+        continue;
+      }
+
+      zend_throw_exception_ex(
+        quic_exception_ce,
+        errno,
+        "recv() failed: %s",
+        strerror(errno)
+      );
+      return false;
+    }
+
+    now = quic_server_timestamp();
+    if (EG(exception) != NULL) {
+      return false;
+    }
+
+    rv = ngtcp2_conn_read_pkt(intern->conn, &path, &packet_info, buffer, (size_t) nread, now);
+    if (rv != 0) {
+      return quic_server_record_protocol_error(intern, rv);
+    }
+  }
+}
+
+static bool quic_server_try_accept_initial(quic_server_connection_object *intern, bool *accepted)
+{
+  uint8_t buffer[2048];
+
+  *accepted = false;
+
+  for (;;) {
+    struct sockaddr_storage peer_addr;
+    ngtcp2_version_cid version_cid;
+    ngtcp2_cid client_dcid;
+    ngtcp2_cid client_scid;
+    ngtcp2_path path;
+    ngtcp2_pkt_info packet_info = {0};
+    socklen_t peer_addrlen = sizeof(peer_addr);
+    ssize_t nread;
+    uint32_t version;
+    uint64_t now;
+    int rv;
+
+    nread = recvfrom(
+      intern->fd,
+      buffer,
+      sizeof(buffer),
+      0,
+      (struct sockaddr *) &peer_addr,
+      &peer_addrlen
+    );
+    if (nread < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return true;
+      }
+
+      if (errno == EINTR) {
+        continue;
+      }
+
+      zend_throw_exception_ex(
+        quic_exception_ce,
+        errno,
+        "recvfrom() failed: %s",
+        strerror(errno)
+      );
+      return false;
+    }
+
+    rv = ngtcp2_pkt_decode_version_cid(&version_cid, buffer, (size_t) nread, 0);
+    if (rv != 0 && rv != NGTCP2_ERR_VERSION_NEGOTIATION) {
+      continue;
+    }
+
+    if (!ngtcp2_is_supported_version(version_cid.version)) {
+      continue;
+    }
+
+    if (version_cid.dcidlen > NGTCP2_MAX_CIDLEN || version_cid.scidlen > NGTCP2_MAX_CIDLEN) {
+      continue;
+    }
+
+    ngtcp2_cid_init(&client_dcid, version_cid.dcid, version_cid.dcidlen);
+    ngtcp2_cid_init(&client_scid, version_cid.scid, version_cid.scidlen);
+    version = version_cid.version;
+
+    if (connect(intern->fd, (struct sockaddr *) &peer_addr, peer_addrlen) != 0) {
+      zend_throw_exception_ex(
+        quic_exception_ce,
+        errno,
+        "connect() failed: %s",
+        strerror(errno)
+      );
+      return false;
+    }
+
+    memcpy(&intern->peer_addr, &peer_addr, peer_addrlen);
+    intern->peer_addrlen = peer_addrlen;
+
+    intern->local_addrlen = sizeof(intern->local_addr);
+    if (getsockname(intern->fd, (struct sockaddr *) &intern->local_addr, &intern->local_addrlen) < 0) {
+      zend_throw_exception_ex(
+        quic_exception_ce,
+        errno,
+        "getsockname() failed: %s",
+        strerror(errno)
+      );
+      return false;
+    }
+
+    if (!quic_server_tls_init(intern)) {
+      return false;
+    }
+
+    if (!quic_server_quic_init(intern, &client_dcid, &client_scid, version)) {
+      return false;
+    }
+
+    path.local.addr = (struct sockaddr *) &intern->local_addr;
+    path.local.addrlen = intern->local_addrlen;
+    path.remote.addr = (struct sockaddr *) &intern->peer_addr;
+    path.remote.addrlen = intern->peer_addrlen;
+    path.user_data = NULL;
+
+    now = quic_server_timestamp();
+    if (EG(exception) != NULL) {
+      return false;
+    }
+
+    rv = ngtcp2_conn_read_pkt(intern->conn, &path, &packet_info, buffer, (size_t) nread, now);
+    if (rv != 0) {
+      return quic_server_record_protocol_error(intern, rv);
+    }
+
+    intern->started = true;
+    *accepted = true;
+    return true;
+  }
+}
+
+static bool quic_server_process_readable(quic_server_connection_object *intern)
+{
+  bool accepted = false;
+
+  if (intern->fd < 0) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Socket is closed");
+    return false;
+  }
+
+  if (intern->conn == NULL) {
+    if (!quic_server_try_accept_initial(intern, &accepted)) {
+      return false;
+    }
+
+    if (!accepted) {
+      return true;
+    }
+  }
+
+  return quic_server_handle_connected_readable(intern);
+}
+
+static bool quic_server_process_expiry(quic_server_connection_object *intern)
+{
+  uint64_t now;
+  int rv;
+
+  if (intern->conn == NULL) {
+    return true;
+  }
+
+  now = quic_server_timestamp();
+  if (EG(exception) != NULL) {
+    return false;
+  }
+
+  rv = ngtcp2_conn_handle_expiry(intern->conn, now);
+  if (rv != 0) {
+    return quic_server_record_protocol_error(intern, rv);
+  }
+
+  return true;
+}
+
+static bool quic_server_write_connection_close_packet(
+  quic_server_connection_object *intern,
+  const ngtcp2_ccerr *ccerr
+)
+{
+  ngtcp2_path_storage path_storage;
+  ngtcp2_pkt_info packet_info;
+  uint8_t buffer[NGTCP2_MAX_UDP_PAYLOAD_SIZE];
+  ngtcp2_ssize nwrite;
+  uint64_t now;
+
+  if (intern->conn == NULL) {
+    return true;
+  }
+
+  if (ngtcp2_conn_in_closing_period(intern->conn) ||
+      ngtcp2_conn_in_draining_period(intern->conn)) {
+    return true;
+  }
+
+  now = quic_server_timestamp();
+  if (EG(exception) != NULL) {
+    return false;
+  }
+
+  ngtcp2_path_storage_zero(&path_storage);
+
+  nwrite = ngtcp2_conn_write_connection_close(
+    intern->conn,
+    &path_storage.path,
+    &packet_info,
+    buffer,
+    sizeof(buffer),
+    ccerr,
+    now
+  );
+  if (nwrite < 0) {
+    zend_throw_exception_ex(
+      quic_protocol_exception_ce,
+      (int) nwrite,
+      "ngtcp2_conn_write_connection_close() failed: %s",
+      ngtcp2_strerror((int) nwrite)
+    );
+    return false;
+  }
+
+  if (nwrite == 0) {
+    return true;
+  }
+
+  return quic_server_send_packet(intern, buffer, (size_t) nwrite);
 }
 
 static void quic_server_connection_free_object(zend_object *object)
 {
   quic_server_connection_object *intern = quic_server_connection_from_obj(object);
+
+  quic_server_reset_connection_state(intern);
 
   if (intern->fd >= 0) {
     close(intern->fd);
@@ -244,6 +1184,26 @@ static void quic_server_connection_free_object(zend_object *object)
     intern->port = NULL;
   }
 
+  if (intern->alpn != NULL) {
+    zend_string_release(intern->alpn);
+    intern->alpn = NULL;
+  }
+
+  if (intern->certfile != NULL) {
+    zend_string_release(intern->certfile);
+    intern->certfile = NULL;
+  }
+
+  if (intern->keyfile != NULL) {
+    zend_string_release(intern->keyfile);
+    intern->keyfile = NULL;
+  }
+
+  if (intern->response != NULL) {
+    zend_string_release(intern->response);
+    intern->response = NULL;
+  }
+
   zend_object_std_dtor(&intern->std);
 }
 
@@ -255,7 +1215,32 @@ static zend_object *quic_server_connection_create_object(zend_class_entry *class
   intern->fd = -1;
   intern->host = NULL;
   intern->port = NULL;
+  intern->alpn = zend_string_init(QUIC_SERVER_DEFAULT_ALPN, sizeof(QUIC_SERVER_DEFAULT_ALPN) - 1, 0);
+  intern->certfile = zend_string_init(
+    QUIC_SERVER_DEFAULT_CERT_FILE,
+    sizeof(QUIC_SERVER_DEFAULT_CERT_FILE) - 1,
+    0
+  );
+  intern->keyfile = zend_string_init(
+    QUIC_SERVER_DEFAULT_KEY_FILE,
+    sizeof(QUIC_SERVER_DEFAULT_KEY_FILE) - 1,
+    0
+  );
+  intern->response = zend_string_init(
+    QUIC_SERVER_DEFAULT_RESPONSE,
+    sizeof(QUIC_SERVER_DEFAULT_RESPONSE) - 1,
+    0
+  );
+  intern->started = false;
+  intern->handshake_complete = false;
   intern->local_addrlen = 0;
+  intern->peer_addrlen = 0;
+  intern->cred = NULL;
+  intern->session = NULL;
+  intern->conn = NULL;
+  ngtcp2_ccerr_default(&intern->last_error);
+  intern->tx_stream.stream_id = -1;
+  intern->tx_stream.nwrite = 0;
 
   zend_object_std_init(&intern->std, class_type);
   object_properties_init(&intern->std, class_type);
@@ -313,8 +1298,6 @@ PHP_METHOD(Quic_ServerConnection, __construct)
     RETURN_THROWS();
   }
 
-  (void) options;
-
   port = quic_server_port_to_string(port_value);
   if (port == NULL) {
     RETURN_THROWS();
@@ -325,6 +1308,29 @@ PHP_METHOD(Quic_ServerConnection, __construct)
 
   if (!quic_server_bind_socket(intern)) {
     RETURN_THROWS();
+  }
+
+  if (options != NULL) {
+    if (intern->alpn != NULL) {
+      zend_string_release(intern->alpn);
+      intern->alpn = NULL;
+    }
+    if (intern->certfile != NULL) {
+      zend_string_release(intern->certfile);
+      intern->certfile = NULL;
+    }
+    if (intern->keyfile != NULL) {
+      zend_string_release(intern->keyfile);
+      intern->keyfile = NULL;
+    }
+    if (intern->response != NULL) {
+      zend_string_release(intern->response);
+      intern->response = NULL;
+    }
+
+    if (!quic_server_apply_options(intern, Z_ARRVAL_P(options))) {
+      RETURN_THROWS();
+    }
   }
 }
 
@@ -362,36 +1368,72 @@ PHP_METHOD(Quic_ServerConnection, getStream)
 
 PHP_METHOD(Quic_ServerConnection, accept)
 {
-  quic_throw_not_implemented("Quic\\ServerConnection::accept");
-  RETURN_THROWS();
+  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+
+  if (!quic_server_process_readable(intern)) {
+    RETURN_THROWS();
+  }
 }
 
 PHP_METHOD(Quic_ServerConnection, handleReadable)
 {
-  quic_throw_not_implemented("Quic\\ServerConnection::handleReadable");
-  RETURN_THROWS();
+  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+
+  if (!quic_server_process_readable(intern)) {
+    RETURN_THROWS();
+  }
 }
 
 PHP_METHOD(Quic_ServerConnection, handleExpiry)
 {
-  quic_throw_not_implemented("Quic\\ServerConnection::handleExpiry");
-  RETURN_THROWS();
+  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+
+  if (!quic_server_process_expiry(intern)) {
+    RETURN_THROWS();
+  }
 }
 
 PHP_METHOD(Quic_ServerConnection, flush)
 {
-  quic_throw_not_implemented("Quic\\ServerConnection::flush");
-  RETURN_THROWS();
+  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+
+  if (!quic_server_flush_packets(intern)) {
+    RETURN_THROWS();
+  }
 }
 
 PHP_METHOD(Quic_ServerConnection, getTimeout)
 {
-  RETURN_NULL();
+  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+  ngtcp2_tstamp expiry;
+  uint64_t now;
+  uint64_t delta_ms;
+
+  if (intern->conn == NULL) {
+    RETURN_NULL();
+  }
+
+  expiry = ngtcp2_conn_get_expiry(intern->conn);
+
+  now = quic_server_timestamp();
+  if (EG(exception) != NULL) {
+    RETURN_THROWS();
+  }
+
+  if (expiry <= now) {
+    RETURN_LONG(0);
+  }
+
+  delta_ms = (expiry - now) / NGTCP2_MILLISECONDS;
+
+  RETURN_LONG((zend_long) delta_ms);
 }
 
 PHP_METHOD(Quic_ServerConnection, isHandshakeComplete)
 {
-  RETURN_FALSE;
+  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+
+  RETURN_BOOL(intern->handshake_complete);
 }
 
 PHP_METHOD(Quic_ServerConnection, popAcceptedStream)
@@ -404,6 +1446,8 @@ PHP_METHOD(Quic_ServerConnection, close)
   quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
   zval *error_code = NULL;
   zend_string *reason = NULL;
+  ngtcp2_ccerr ccerr;
+  bool ok = true;
 
   ZEND_PARSE_PARAMETERS_START(0, 2)
     Z_PARAM_OPTIONAL
@@ -416,17 +1460,49 @@ PHP_METHOD(Quic_ServerConnection, close)
     RETURN_THROWS();
   }
 
-  (void) reason;
+  ngtcp2_ccerr_default(&ccerr);
+
+  if (error_code != NULL && Z_TYPE_P(error_code) == IS_LONG) {
+    ngtcp2_ccerr_set_application_error(
+      &ccerr,
+      (uint64_t) Z_LVAL_P(error_code),
+      reason != NULL ? (const uint8_t *) ZSTR_VAL(reason) : NULL,
+      reason != NULL ? ZSTR_LEN(reason) : 0
+    );
+  } else if (reason != NULL && ZSTR_LEN(reason) > 0) {
+    ngtcp2_ccerr_set_transport_error(
+      &ccerr,
+      NGTCP2_NO_ERROR,
+      (const uint8_t *) ZSTR_VAL(reason),
+      ZSTR_LEN(reason)
+    );
+  }
+
+  if (intern->started && intern->conn != NULL) {
+    ok = quic_server_write_connection_close_packet(intern, &ccerr);
+  }
+
+  quic_server_reset_connection_state(intern);
 
   if (intern->fd >= 0) {
     close(intern->fd);
     intern->fd = -1;
   }
+
+  if (!ok) {
+    RETURN_THROWS();
+  }
 }
 
 PHP_METHOD(Quic_ServerConnection, getPeerAddress)
 {
-  array_init(return_value);
+  quic_server_connection_object *intern = Z_QUIC_SERVER_CONNECTION_P(ZEND_THIS);
+
+  quic_server_address_to_array(
+    return_value,
+    (const struct sockaddr *) &intern->peer_addr,
+    intern->peer_addrlen
+  );
 }
 
 PHP_METHOD(Quic_ServerConnection, getLocalAddress)
