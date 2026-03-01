@@ -2351,7 +2351,7 @@ PHP_METHOD(Quic_ServerPeer, close)
 static const zend_function_entry quic_server_connection_methods[] = {
   PHP_ME(Quic_ServerConnection, __construct, arginfo_quic_server_construct, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, getPollStream, arginfo_quic_server_get_stream, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ServerConnection, getStream, arginfo_quic_server_get_stream, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_ServerConnection, getStream, arginfo_quic_server_get_stream, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ServerConnection, accept, arginfo_quic_server_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, handleReadable, arginfo_quic_server_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ServerConnection, handleExpiry, arginfo_quic_server_void, ZEND_ACC_PUBLIC)

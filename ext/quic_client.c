@@ -1617,7 +1617,7 @@ PHP_METHOD(Quic_ClientConnection, getLocalAddress)
 static const zend_function_entry quic_client_connection_methods[] = {
   PHP_ME(Quic_ClientConnection, __construct, arginfo_quic_client_construct, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ClientConnection, getPollStream, arginfo_quic_client_get_stream, ZEND_ACC_PUBLIC)
-  PHP_ME(Quic_ClientConnection, getStream, arginfo_quic_client_get_stream, ZEND_ACC_PUBLIC)
+  PHP_ME(Quic_ClientConnection, getStream, arginfo_quic_client_get_stream, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
   PHP_ME(Quic_ClientConnection, startHandshake, arginfo_quic_client_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ClientConnection, handleReadable, arginfo_quic_client_void, ZEND_ACC_PUBLIC)
   PHP_ME(Quic_ClientConnection, handleExpiry, arginfo_quic_client_void, ZEND_ACC_PUBLIC)

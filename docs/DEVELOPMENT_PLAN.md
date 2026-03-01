@@ -102,7 +102,7 @@ Initial methods:
 - `__construct(string $host, int|string $port, array $options = [])`
 - `getPollStream()`: returns the UDP socket as a PHP stream resource for
   readiness monitoring
-- `getStream()`: compatibility alias for `getPollStream()`
+- `getStream()`: deprecated compatibility alias for `getPollStream()`
 - `startHandshake(): void`
 - `handleReadable(): void`
 - `handleExpiry(): void`
@@ -133,7 +133,7 @@ Initial methods:
 
 - `__construct(string $host, int|string $port, array $options = [])`
 - `getPollStream()`
-- `getStream()` compatibility alias
+- `getStream()` deprecated compatibility alias
 - `accept(): void`
 - `handleReadable(): void`
 - `handleExpiry(): void`

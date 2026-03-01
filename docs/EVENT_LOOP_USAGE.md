@@ -23,8 +23,8 @@ All QUIC I/O must still go through:
 - `handleExpiry()`
 - `flush()`
 
-`getStream()` is kept as a compatibility alias, but new code should prefer
-`getPollStream()` so the intended use is explicit.
+`getStream()` is kept as a deprecated compatibility alias, but new code should
+prefer `getPollStream()` so the intended use is explicit.
 
 ## Server object split
 
