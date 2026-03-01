@@ -806,6 +806,122 @@ static bool quic_client_flush_packets(quic_client_connection_object *intern)
   }
 }
 
+static bool quic_client_record_protocol_error(quic_client_connection_object *intern, int rv)
+{
+  if (!intern->last_error.error_code) {
+    if (rv == NGTCP2_ERR_CRYPTO) {
+      ngtcp2_ccerr_set_tls_alert(
+        &intern->last_error,
+        ngtcp2_conn_get_tls_alert(intern->conn),
+        NULL,
+        0
+      );
+    } else {
+      ngtcp2_ccerr_set_liberr(&intern->last_error, rv, NULL, 0);
+    }
+  }
+
+  zend_throw_exception_ex(
+    quic_protocol_exception_ce,
+    rv,
+    "%s",
+    ngtcp2_strerror(rv)
+  );
+
+  return false;
+}
+
+static bool quic_client_handle_readable_packets(quic_client_connection_object *intern)
+{
+  uint8_t buffer[65536];
+  struct sockaddr_storage remote_addr;
+  struct iovec iov = {
+    .iov_base = buffer,
+    .iov_len = sizeof(buffer),
+  };
+  struct msghdr msg = {0};
+  ngtcp2_pkt_info packet_info = {0};
+
+  msg.msg_name = &remote_addr;
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+
+  for (;;) {
+    ssize_t nread;
+    ngtcp2_path path;
+    uint64_t now;
+    int rv;
+
+    msg.msg_namelen = sizeof(remote_addr);
+
+    nread = recvmsg(intern->fd, &msg, MSG_DONTWAIT);
+    if (nread < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return true;
+      }
+
+      if (errno == ECONNREFUSED) {
+        zend_throw_exception_ex(
+          quic_exception_ce,
+          errno,
+          "recvmsg() failed: %s",
+          strerror(errno)
+        );
+        return false;
+      }
+
+      zend_throw_exception_ex(
+        quic_exception_ce,
+        errno,
+        "recvmsg() failed: %s",
+        strerror(errno)
+      );
+      return false;
+    }
+
+    path.local.addr = (struct sockaddr *) &intern->local_addr;
+    path.local.addrlen = intern->local_addrlen;
+    path.remote.addr = msg.msg_name;
+    path.remote.addrlen = msg.msg_namelen;
+    path.user_data = NULL;
+
+    now = quic_client_timestamp();
+    if (EG(exception) != NULL) {
+      return false;
+    }
+
+    rv = ngtcp2_conn_read_pkt(
+      intern->conn,
+      &path,
+      &packet_info,
+      buffer,
+      (size_t) nread,
+      now
+    );
+    if (rv != 0) {
+      return quic_client_record_protocol_error(intern, rv);
+    }
+  }
+}
+
+static bool quic_client_process_expiry(quic_client_connection_object *intern)
+{
+  uint64_t now;
+  int rv;
+
+  now = quic_client_timestamp();
+  if (EG(exception) != NULL) {
+    return false;
+  }
+
+  rv = ngtcp2_conn_handle_expiry(intern->conn, now);
+  if (rv != 0) {
+    return quic_client_record_protocol_error(intern, rv);
+  }
+
+  return true;
+}
+
 static void quic_client_address_to_array(
   zval *return_value,
   const struct sockaddr *addr,
@@ -1058,14 +1174,30 @@ PHP_METHOD(Quic_ClientConnection, startHandshake)
 
 PHP_METHOD(Quic_ClientConnection, handleReadable)
 {
-  quic_throw_not_implemented("Quic\\ClientConnection::handleReadable");
-  RETURN_THROWS();
+  quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
+
+  if (!intern->started || intern->conn == NULL) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Handshake has not been started");
+    RETURN_THROWS();
+  }
+
+  if (!quic_client_handle_readable_packets(intern)) {
+    RETURN_THROWS();
+  }
 }
 
 PHP_METHOD(Quic_ClientConnection, handleExpiry)
 {
-  quic_throw_not_implemented("Quic\\ClientConnection::handleExpiry");
-  RETURN_THROWS();
+  quic_client_connection_object *intern = Z_QUIC_CLIENT_CONNECTION_P(ZEND_THIS);
+
+  if (!intern->started || intern->conn == NULL) {
+    zend_throw_exception_ex(quic_exception_ce, 0, "Handshake has not been started");
+    RETURN_THROWS();
+  }
+
+  if (!quic_client_process_expiry(intern)) {
+    RETURN_THROWS();
+  }
 }
 
 PHP_METHOD(Quic_ClientConnection, flush)
