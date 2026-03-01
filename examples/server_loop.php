@@ -26,6 +26,7 @@ $server = new Quic\ServerConnection('127.0.0.1', $port, [
 $socket = $server->getStream();
 $peer = null;
 $accepted = null;
+$responded = false;
 $requestBody = '';
 
 fwrite(STDERR, "listening on 127.0.0.1:" . $server->getLocalAddress()['port'] . PHP_EOL);
@@ -51,12 +52,17 @@ while (true) {
             $requestBody .= $chunk;
         }
 
-        if ($accepted->isFinished() && $accepted->isWritable()) {
+        if (!$responded && $accepted->isFinished() && $accepted->isWritable()) {
             $accepted->write($response, true);
             $server->flush();
+            $responded = true;
         }
 
-        if ($accepted->isFinished() && !$accepted->isWritable() && $requestBody !== '') {
+        if ($responded && $accepted->isFinished() && $requestBody !== '') {
+            if ($peer instanceof Quic\ServerPeer) {
+                $peer->close();
+                $server->flush();
+            }
             fwrite(STDOUT, $requestBody);
             break;
         }
@@ -65,7 +71,7 @@ while (true) {
     $read = [$socket];
     $write = null;
     $except = null;
-    $timeout = $server->getTimeout() ?? 50;
+    $timeout = $peer?->getTimeout() ?? $server->getTimeout() ?? 50;
     $ready = stream_select($read, $write, $except, intdiv($timeout, 1000), ($timeout % 1000) * 1000);
 
     if ($ready === false) {

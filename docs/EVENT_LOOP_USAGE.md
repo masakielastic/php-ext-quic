@@ -107,6 +107,7 @@ $server = new Quic\ServerConnection('127.0.0.1', 4433, [
 $socket = $server->getStream();
 $peer = null;
 $accepted = null;
+$responded = false;
 
 while (true) {
     $server->flush();
@@ -125,9 +126,16 @@ while (true) {
             fwrite(STDOUT, $chunk);
         }
 
-        if ($accepted->isFinished() && $accepted->isWritable()) {
+        if (!$responded && $accepted->isFinished() && $accepted->isWritable()) {
             $accepted->write("server response\n", true);
             $server->flush();
+            $responded = true;
+        }
+
+        if ($responded && $accepted->isFinished() && $peer instanceof Quic\ServerPeer) {
+            $peer->close();
+            $server->flush();
+            break;
         }
     }
 
